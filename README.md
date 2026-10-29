@@ -39,6 +39,10 @@ English.
 ### Opção 1: Painel Web Local (Recomendado)
 Interface visual moderna e limpa, com **geocodificação automática de cidades** (sem necessidade de digitar latitude/longitude manual):
 
+<p align="center">
+  <img src="assets/web-ui-preview.png" alt="Painel Web Local do Google Maps Scraper" width="95%">
+</p>
+
 1. Inicie a engine (via Docker):
 ```bash
 docker compose up -d
