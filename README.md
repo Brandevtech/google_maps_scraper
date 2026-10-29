@@ -36,26 +36,44 @@ English.
 
 ## Quick start
 
-Requires [Docker Desktop](https://www.docker.com/products/docker-desktop). Python 3 is optional and
-uses the standard library only.
+### Opção 1: Painel Web Local (Recomendado)
+Interface visual moderna e limpa, com **geocodificação automática de cidades** (sem necessidade de digitar latitude/longitude manual):
 
+1. Inicie a engine (via Docker):
 ```bash
-git clone https://github.com/Mahanaicoach/google-maps-scraper-kit.git
-cd google-maps-scraper-kit
 docker compose up -d
-./scripts/scrape.sh "coffee shops in Austin TX" 30.2672 -97.7431 5
 ```
 
-No coordinates handy? Let the Python CLI geocode the city:
-
+2. Inicie o painel web:
 ```bash
-python3 scripts/scrape.py "dentists in Denver CO" --city "Denver, CO" --depth 5 --socials
+py web_ui.py
+# ou: python3 web_ui.py
 ```
 
-Need the whole city, not just the first 120? Add `--grid 3`:
+3. Acesse no navegador:
+👉 **`http://localhost:5000`**
+
+Digite o que quer buscar, a cidade/estado (ex: `Curitiba, PR` ou `São Paulo, SP`), acompanhe o progresso em tempo real e faça o download do CSV direto pela tela.
+
+---
+
+### Opção 2: Linha de Comando (CLI Python)
+Requer a engine em execução. O script Python usa exclusivamente a biblioteca padrão (sem necessidade de `pip install`).
 
 ```bash
-python3 scripts/scrape.py "dentists in Denver CO" --city "Denver, CO" --grid 3
+docker compose up -d
+```
+
+Execute a busca informando o termo e a cidade:
+
+```bash
+py scripts/scrape.py "dentists in Denver CO" --city "Denver, CO" --depth 5 --socials
+```
+
+Para varrer a cidade inteira além do limite inicial de ~120 resultados com grade de coordenadas, adicione `--grid 3`:
+
+```bash
+py scripts/scrape.py "dentists in Denver CO" --city "Denver, CO" --grid 3
 ```
 
 ### Example output
