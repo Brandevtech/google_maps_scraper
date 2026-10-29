@@ -46,9 +46,10 @@ load_env_file()
 BASE_API = os.environ.get("SCRAPER_BASE_URL") or f"http://localhost:{os.environ.get('SCRAPER_PORT') or '8080'}"
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
 UA = "google-maps-scraper-kit-web/1.3"
-PORT = 5000
-MAX_USERS = 3
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "users.db")
+PORT = int(os.environ.get("PORT") or 5000)
+MAX_USERS = int(os.environ.get("MAX_USERS") or 3)
+DB_PATH = os.environ.get("DB_PATH") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "users.db")
+os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)
 
 # ── Banco de Dados SQLite ─────────────────────────────────────────────────────
 def init_db():
@@ -107,6 +108,13 @@ def db_get_user_by_email(email):
         cur.execute("SELECT * FROM users WHERE email = ?", (email,))
         row = cur.fetchone()
         return dict(row) if row else None
+
+def db_get_all_users():
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM users ORDER BY id ASC")
+        return [dict(r) for r in cur.fetchall()]
 
 def db_get_user_by_id(user_id):
     with sqlite3.connect(DB_PATH) as conn:
@@ -211,67 +219,158 @@ LOGIN_PAGE = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Login - Google Maps Scraper</title>
+  <title>Scraper Brandev - Login</title>
+  <link rel="icon" type="image/png" href="/assets/favicon.png">
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <style>
     :root {
-      --primary: #2563eb;
-      --primary-hover: #1d4ed8;
-      --bg: #0b1220;
-      --surface: #1e293b;
-      --border: #334155;
-      --text: #f8fafc;
-      --text-muted: #94a3b8;
+      --primary: #0066ff;
+      --primary-hover: #0052cc;
+      --navy: #0b192c;
+      --bg: #ffffff;
+      --bg-alt: #f8fafc;
+      --surface: #ffffff;
+      --border: #e2e8f0;
+      --text: #0f172a;
+      --text-muted: #64748b;
       --danger: #ef4444;
+      --danger-bg: #fef2f2;
+      --danger-text: #991b1b;
       --success: #10b981;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-    body { background: var(--bg); color: var(--text); display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 1.5rem; }
-    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 1rem; width: 100%; max-width: 440px; padding: 2.2rem; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.4); text-align: center; }
-    .logo { font-size: 2.5rem; margin-bottom: 0.5rem; }
-    h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; }
-    .subtitle { color: var(--text-muted); font-size: 0.88rem; margin-bottom: 1.75rem; line-height: 1.4; }
+    body {
+      background: var(--bg-alt);
+      background-image: radial-gradient(#e2e8f0 1.2px, transparent 1.2px);
+      background-size: 24px 24px;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 1.5rem;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 1.25rem;
+      width: 100%;
+      max-width: 440px;
+      padding: 2.5rem 2.2rem;
+      box-shadow: 0 10px 25px -5px rgba(11, 25, 44, 0.08), 0 8px 10px -6px rgba(11, 25, 44, 0.04);
+      text-align: center;
+    }
+    .logo-container {
+      display: flex;
+      justify-content: center;
+      margin-bottom: 1.25rem;
+    }
+    .logo-img {
+      width: 140px;
+      height: 140px;
+      object-fit: contain;
+      border-radius: 1rem;
+      box-shadow: 0 4px 16px rgba(0, 102, 255, 0.1);
+      border: 1px solid var(--border);
+      background: #ffffff;
+      padding: 6px;
+    }
+    h1 {
+      font-size: 1.6rem;
+      font-weight: 800;
+      color: var(--navy);
+      letter-spacing: -0.02em;
+      margin-bottom: 0.35rem;
+    }
+    h1 span {
+      color: var(--primary);
+    }
+    .subtitle {
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      margin-bottom: 1.75rem;
+      line-height: 1.5;
+    }
     
-    .quota-box { background: rgba(15, 23, 42, 0.8); border: 1px solid var(--border); border-radius: 0.75rem; padding: 1rem; margin-bottom: 1.75rem; text-align: left; }
-    .quota-header { display: flex; justify-content: space-between; font-size: 0.8rem; font-weight: 600; margin-bottom: 0.5rem; }
-    .quota-bar-bg { width: 100%; height: 8px; background: #334155; border-radius: 999px; overflow: hidden; }
-    .quota-bar-fill { height: 100%; background: var(--primary); transition: width 0.3s; }
-    .quota-bar-fill.full { background: var(--danger); }
-    .quota-desc { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.5rem; }
+    .quota-box {
+      background: #f8fafc;
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      padding: 1rem;
+      margin-bottom: 1.75rem;
+      text-align: left;
+    }
+    .quota-header {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 0.5rem;
+    }
+    .quota-bar-bg {
+      width: 100%;
+      height: 8px;
+      background: #e2e8f0;
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    .quota-bar-fill {
+      height: 100%;
+      background: var(--primary);
+      transition: width 0.3s;
+    }
+    .quota-bar-fill.full {
+      background: var(--danger);
+    }
+    .quota-desc {
+      font-size: 0.76rem;
+      color: var(--text-muted);
+      margin-top: 0.5rem;
+    }
 
-    .btn-google-container { display: flex; justify-content: center; margin-bottom: 1rem; min-height: 44px; }
-    
+    .btn-google-container {
+      display: flex;
+      justify-content: center;
+      margin-bottom: 1rem;
+      min-height: 44px;
+    }
 
-    .alert { padding: 0.75rem 1rem; border-radius: 0.5rem; font-size: 0.82rem; margin-top: 1rem; text-align: left; display: none; }
-    .alert-danger { background: rgba(239, 68, 68, 0.15); border: 1px solid var(--danger); color: #fca5a5; display: block; }
-    .alert-success { background: rgba(16, 185, 129, 0.15); border: 1px solid var(--success); color: #86efac; display: block; }
+    .alert {
+      padding: 0.75rem 1rem;
+      border-radius: 0.5rem;
+      font-size: 0.85rem;
+      margin-top: 1rem;
+      text-align: left;
+      display: none;
+    }
+    .alert-danger {
+      background: var(--danger-bg);
+      border: 1px solid #fecaca;
+      color: var(--danger-text);
+      display: block;
+    }
+    .alert-success {
+      background: #ecfdf5;
+      border: 1px solid #a7f3d0;
+      color: #065f46;
+      display: block;
+    }
   </style>
 </head>
 <body>
   <div class="card">
-    <div class="logo">📍</div>
-    <h1>Acesso ao Scraper</h1>
-    <p class="subtitle">Faça login com a sua conta Google para acessar o seu painel de leads exclusivo.</p>
-
-    <!-- Indicador de Vagas de Usuários (Limite de 3) -->
-    <div class="quota-box">
-      <div class="quota-header">
-        <span>Vagas de Usuários</span>
-        <span id="quota-text">Carregando...</span>
-      </div>
-      <div class="quota-bar-bg">
-        <div id="quota-fill" class="quota-bar-fill" style="width: 0%;"></div>
-      </div>
-      <p id="quota-desc" class="quota-desc">Limite máximo de 3 usuários autorizados.</p>
+    <div class="logo-container">
+      <img src="/assets/logo.png" alt="Scraper Brandev" class="logo-img">
     </div>
+    <h1 style="font-size: 1.3rem; font-weight: 700; color: var(--navy); margin-bottom: 1.5rem;">Scraper de leads do Google Maps</h1>
 
-    <!-- Botão Oficial do Google com Redirect Nativo (Zero erro de COOP / popup) -->
+    <!-- Botão Oficial do Google (Popup / Callback nativo - sem erro de redirect_uri_mismatch) -->
     <div id="google-btn-section">
       <div id="g_id_onload"
            data-client_id="{{GOOGLE_CLIENT_ID}}"
            data-context="signin"
-           data-ux_mode="redirect"
-           data-login_uri="/login"
+           data-callback="handleCredentialResponse"
            data-auto_prompt="false">
       </div>
       <div class="btn-google-container">
@@ -289,34 +388,37 @@ LOGIN_PAGE = """<!DOCTYPE html>
     <!-- Mensagens de Alerta / Erro -->
     <div id="alert-box" class="alert">{{ERROR_MESSAGE}}</div>
 
-    </div>
+
+  </div>
 
   <script>
     async function updateQuota() {
-      try {
-        const res = await fetch('/api/auth/status');
-        const data = await res.json();
-        const count = data.user_count;
-        const max = data.max_users;
-        const pct = Math.min(100, Math.round((count / max) * 100));
+      // Quota box removed from UI
+    }
 
-        document.getElementById('quota-text').textContent = `${count} de ${max} cadastrados`;
-        const fill = document.getElementById('quota-fill');
-        fill.style.width = pct + '%';
-        if (count >= max) {
-          fill.classList.add('full');
-          document.getElementById('quota-desc').innerHTML = '⚠️ <strong>Limite atingido.</strong> Apenas os 3 usuários já cadastrados podem entrar.';
+    async function handleCredentialResponse(response) {
+      try {
+        showAlert('Autenticando com o Google...', 'success');
+        const res = await fetch('/api/auth/google', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ credential: response.credential })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          showAlert('✅ Login efetuado com sucesso! Entrando...', 'success');
+          window.location.replace('/');
+          setTimeout(() => { window.location.href = '/'; }, 100);
+          setTimeout(() => { window.location.reload(); }, 350);
         } else {
-          document.getElementById('quota-desc').textContent = `${max - count} vaga(s) restante(s). Novos usuários serão cadastrados automaticamente.`;
+          showAlert(data.error || 'Erro ao realizar login.');
         }
-      } catch (e) {
-        console.error(e);
+      } catch (err) {
+        showAlert('Erro de conexão ao autenticar: ' + err.message);
       }
     }
 
-    
-
-    function showAlert(msg, type) {
+    function showAlert(msg, type = 'danger') {
       const box = document.getElementById('alert-box');
       box.textContent = msg;
       box.className = 'alert alert-' + type;
@@ -326,79 +428,238 @@ LOGIN_PAGE = """<!DOCTYPE html>
     updateQuota();
   </script>
 </body>
-</html>
-"""
+</html>"""
 
 APP_PAGE = """<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Google Maps Scraper - Painel</title>
+  <title>Scraper Brandev - Painel</title>
+  <link rel="icon" type="image/png" href="/assets/favicon.png">
   <style>
     :root {
-      --primary: #2563eb;
-      --primary-hover: #1d4ed8;
-      --bg: #0b1220;
-      --surface: #1e293b;
-      --border: #334155;
-      --text: #f8fafc;
-      --text-muted: #94a3b8;
+      --primary: #0066ff;
+      --primary-hover: #0052cc;
+      --navy: #0b192c;
+      --bg: #ffffff;
+      --bg-alt: #f8fafc;
+      --surface: #ffffff;
+      --border: #e2e8f0;
+      --border-focus: #0066ff;
+      --text: #0f172a;
+      --text-muted: #64748b;
       --success: #10b981;
       --warning: #f59e0b;
       --danger: #ef4444;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-    body { background: var(--bg); color: var(--text); padding: 2rem; min-height: 100vh; }
-    .container { max-width: 1100px; margin: 0 auto; }
+    body {
+      background: var(--bg-alt);
+      color: var(--text);
+      padding: 1.75rem 2rem;
+      min-height: 100vh;
+    }
+    .container { max-width: 1140px; margin: 0 auto; }
     
-    header { margin-bottom: 2rem; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 1.25rem; flex-wrap: wrap; gap: 1rem; }
-    .header-left { display: flex; align-items: center; gap: 0.75rem; }
-    h1 { font-size: 1.6rem; display: flex; align-items: center; gap: 0.5rem; }
-    .badge { font-size: 0.75rem; background: #064e3b; color: #34d399; padding: 0.2rem 0.5rem; border-radius: 999px; font-weight: 600; }
+    header {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 1rem;
+      padding: 1rem 1.5rem;
+      margin-bottom: 2rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 1rem;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    }
+    .header-left { display: flex; align-items: center; gap: 1rem; }
+    .brand-link { display: flex; align-items: center; gap: 0.85rem; text-decoration: none; color: inherit; }
+    .brand-logo {
+      width: 44px;
+      height: 44px;
+      object-fit: contain;
+      border-radius: 0.6rem;
+      border: 1px solid var(--border);
+      background: #ffffff;
+      padding: 2px;
+    }
+    .brand-title {
+      font-size: 1.25rem;
+      font-weight: 800;
+      color: var(--navy);
+      letter-spacing: -0.02em;
+      line-height: 1.1;
+    }
+    .brand-title span {
+      color: var(--primary);
+    }
+    .brand-subtitle {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      font-weight: 500;
+      display: block;
+    }
+    .badge {
+      font-size: 0.72rem;
+      background: #ecfdf5;
+      color: #065f46;
+      border: 1px solid #a7f3d0;
+      padding: 0.2rem 0.55rem;
+      border-radius: 999px;
+      font-weight: 600;
+    }
     
-    .user-profile { display: flex; align-items: center; gap: 0.75rem; background: rgba(30, 41, 59, 0.7); padding: 0.4rem 0.75rem; border-radius: 999px; border: 1px solid var(--border); }
-    .user-avatar { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; background: #3b82f6; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.85rem; color: #fff; }
-    .user-info { font-size: 0.8rem; line-height: 1.2; }
-    .user-name { font-weight: 600; color: #fff; }
-    .user-email { color: var(--text-muted); font-size: 0.72rem; }
-    .btn-logout { background: none; border: none; color: #f87171; cursor: pointer; font-size: 0.8rem; font-weight: 600; margin-left: 0.5rem; padding: 0.2rem 0.4rem; border-radius: 0.3rem; transition: 0.2s; }
-    .btn-logout:hover { background: rgba(239, 68, 68, 0.15); }
+    .user-profile {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      background: #f8fafc;
+      padding: 0.4rem 0.85rem;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+    }
+    .user-avatar {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      object-fit: cover;
+      background: var(--primary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 0.9rem;
+      color: #fff;
+    }
+    .user-info { font-size: 0.82rem; line-height: 1.2; }
+    .user-name { font-weight: 700; color: var(--navy); }
+    .user-email { color: var(--text-muted); font-size: 0.74rem; }
+    .btn-logout {
+      background: none;
+      border: none;
+      color: var(--danger);
+      cursor: pointer;
+      font-size: 0.8rem;
+      font-weight: 600;
+      margin-left: 0.5rem;
+      padding: 0.25rem 0.55rem;
+      border-radius: 0.4rem;
+      transition: 0.2s;
+      display: flex;
+      align-items: center;
+      gap: 0.25rem;
+    }
+    .btn-logout:hover { background: #fee2e2; }
 
-    .layout { display: grid; grid-template-columns: 360px 1fr; gap: 2rem; }
-    @media (max-width: 850px) { .layout { grid-template-columns: 1fr; } }
+    .layout { display: grid; grid-template-columns: 380px 1fr; gap: 2rem; }
+    @media (max-width: 890px) { .layout { grid-template-columns: 1fr; } }
     
-    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 0.75rem; padding: 1.5rem; }
-    .card h2 { font-size: 1.15rem; margin-bottom: 1.25rem; color: var(--text); }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 1rem;
+      padding: 1.6rem;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    }
+    .card h2 {
+      font-size: 1.18rem;
+      font-weight: 700;
+      margin-bottom: 1.25rem;
+      color: var(--navy);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
     .form-group { margin-bottom: 1.25rem; }
-    label { display: block; font-size: 0.85rem; font-weight: 500; margin-bottom: 0.45rem; color: var(--text-muted); }
-    input[type="text"], input[type="number"] { width: 100%; padding: 0.65rem 0.85rem; background: #0f172a; border: 1px solid var(--border); border-radius: 0.5rem; color: #fff; font-size: 0.95rem; }
-    input:focus { outline: none; border-color: var(--primary); }
-    .help-text { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem; }
+    label {
+      display: block;
+      font-size: 0.85rem;
+      font-weight: 600;
+      margin-bottom: 0.45rem;
+      color: #334155;
+    }
+    input[type="text"], input[type="number"] {
+      width: 100%;
+      padding: 0.7rem 0.9rem;
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      border-radius: 0.55rem;
+      color: var(--text);
+      font-size: 0.95rem;
+      transition: 0.15s;
+    }
+    input:focus {
+      outline: none;
+      border-color: var(--border-focus);
+      box-shadow: 0 0 0 3px rgba(0, 102, 255, 0.15);
+    }
+    .help-text { font-size: 0.76rem; color: var(--text-muted); margin-top: 0.35rem; }
     
-    button.btn { width: 100%; padding: 0.75rem; background: var(--primary); color: white; border: none; border-radius: 0.5rem; font-weight: 600; cursor: pointer; transition: 0.2s; display: flex; align-items: center; justify-content: center; gap: 0.5rem; }
-    button.btn:hover { background: var(--primary-hover); }
-    button.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    button.btn {
+      width: 100%;
+      padding: 0.8rem;
+      background: linear-gradient(135deg, #0066ff 0%, #0052cc 100%);
+      color: white;
+      border: none;
+      border-radius: 0.55rem;
+      font-weight: 600;
+      font-size: 0.95rem;
+      cursor: pointer;
+      transition: 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      box-shadow: 0 4px 12px rgba(0, 102, 255, 0.25);
+    }
+    button.btn:hover {
+      box-shadow: 0 6px 16px rgba(0, 102, 255, 0.35);
+      filter: brightness(1.05);
+    }
+    button.btn:disabled { opacity: 0.55; cursor: not-allowed; box-shadow: none; filter: none; }
     
-    .status-box { margin-top: 1.25rem; padding: 0.75rem; border-radius: 0.5rem; font-size: 0.85rem; display: none; }
-    .status-box.active { display: block; background: #1e1b4b; border: 1px solid #4338ca; color: #c7d2fe; }
-    .status-box.done { display: block; background: #064e3b; border: 1px solid #059669; color: #a7f3d0; }
-    .status-box.error { display: block; background: #450a0a; border: 1px solid #dc2626; color: #fecaca; }
+    .status-box { margin-top: 1.25rem; padding: 0.85rem; border-radius: 0.55rem; font-size: 0.88rem; display: none; line-height: 1.4; }
+    .status-box.active { display: block; background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; }
+    .status-box.done { display: block; background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; }
+    .status-box.error { display: block; background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
     
-    table { width: 100%; border-collapse: collapse; margin-top: 1rem; font-size: 0.875rem; }
-    th, td { text-align: left; padding: 0.75rem; border-bottom: 1px solid var(--border); }
-    th { color: var(--text-muted); font-weight: 600; background: #0f172a; }
-    tr:hover { background: rgba(255,255,255,0.02); }
+    table { width: 100%; border-collapse: collapse; margin-top: 0.75rem; font-size: 0.875rem; }
+    th, td { text-align: left; padding: 0.85rem 0.75rem; border-bottom: 1px solid var(--border); }
+    th { color: #475569; font-weight: 600; background: #f8fafc; }
+    tr:hover { background: #f8fafc; }
     
-    .status-pill { padding: 0.2rem 0.6rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }
-    .pill-ok { background: #064e3b; color: #34d399; }
-    .pill-working { background: #78350f; color: #fbbf24; }
-    .pill-failed { background: #7f1d1d; color: #f87171; }
+    .status-pill { padding: 0.22rem 0.65rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; display: inline-block; }
+    .pill-ok { background: #dcfce7; color: #15803d; border: 1px solid #bbf7d0; }
+    .pill-working { background: #fef3c7; color: #b45309; border: 1px solid #fde68a; }
+    .pill-failed { background: #fee2e2; color: #b91c1c; border: 1px solid #fecaca; }
     
-    .btn-download { display: inline-block; padding: 0.35rem 0.75rem; background: #059669; color: white; border-radius: 0.35rem; text-decoration: none; font-size: 0.75rem; font-weight: 600; }
-    .btn-download:hover { background: #047857; }
+    .btn-download {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.4rem 0.85rem;
+      background: var(--primary);
+      color: white;
+      border-radius: 0.45rem;
+      text-decoration: none;
+      font-size: 0.78rem;
+      font-weight: 600;
+      transition: 0.15s;
+    }
+    .btn-download:hover { background: var(--primary-hover); }
     
-    .spinner { border: 2px solid rgba(255,255,255,0.2); border-left-color: #fff; border-radius: 50%; width: 16px; height: 16px; animation: spin 0.8s linear infinite; display: inline-block; }
+    .spinner {
+      border: 2px solid rgba(255,255,255,0.3);
+      border-left-color: #fff;
+      border-radius: 50%;
+      width: 16px;
+      height: 16px;
+      animation: spin 0.8s linear infinite;
+      display: inline-block;
+    }
     @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
   </style>
 </head>
@@ -406,8 +667,14 @@ APP_PAGE = """<!DOCTYPE html>
   <div class="container">
     <header>
       <div class="header-left">
-        <h1>📍 Google Maps Scraper</h1>
-        <span class="badge">Sua Área Privada</span>
+        <a href="/" class="brand-link">
+          <img src="/assets/logo.png" alt="Scraper Brandev" class="brand-logo">
+          <div class="brand-titles">
+            <div class="brand-title">Scraper <span>Brandev</span></div>
+            <span class="brand-subtitle">Google Maps Lead Extractor</span>
+          </div>
+        </a>
+        <span class="badge">Área Privada</span>
       </div>
 
       <div class="user-profile">
@@ -423,10 +690,10 @@ APP_PAGE = """<!DOCTYPE html>
     <div class="layout">
       <!-- FORMULÁRIO -->
       <div class="card">
-        <h2>Nova Busca</h2>
+        <h2>🚀 Nova Busca de Leads</h2>
         <form id="scrape-form" onsubmit="startScrape(event)">
           <div class="form-group">
-            <label for="keyword">O que buscar? (Palavra-chave)</label>
+            <label for="keyword">O que buscar? (Nicho / Palavra-chave)</label>
             <input type="text" id="keyword" required placeholder="Ex: padarias, dentistas, academias">
           </div>
 
@@ -437,7 +704,7 @@ APP_PAGE = """<!DOCTYPE html>
           </div>
 
           <div class="form-group">
-            <label for="depth">Profundidade (Qtd. de páginas/rolagens)</label>
+            <label for="depth">Profundidade (Qtd. de páginas / rolagens)</label>
             <input type="number" id="depth" value="2" min="1" max="20">
             <div class="help-text">1 a 3 para testes rápidos; 5 a 10 para listas completas.</div>
           </div>
@@ -452,27 +719,26 @@ APP_PAGE = """<!DOCTYPE html>
         </div>
       </div>
 
-      <!-- TABELA DE RESULTADOS EXCLUSIVA DO USUÁRIO -->
+      <!-- TABELA DE RESULTADOS -->
       <div class="card">
-        <div style="display: flex; justify-content: space-between; align-items: center;">
-          <h2>Suas Buscas Realizadas</h2>
-          <button onclick="loadJobs()" style="background: none; border: 1px solid var(--border); color: var(--text-muted); padding: 0.35rem 0.75rem; border-radius: 0.4rem; cursor: pointer; font-size: 0.8rem;">Atualizar Lista</button>
-        </div>
-        <div style="overflow-x: auto;">
-          <table>
-            <thead>
-              <tr>
-                <th>Nome / Busca</th>
-                <th>Data</th>
-                <th>Status</th>
-                <th>Ações</th>
-              </tr>
-            </thead>
-            <tbody id="jobs-tbody">
-              <tr><td colspan="4" style="text-align: center; color: var(--text-muted); padding: 2rem;">Carregando suas buscas...</td></tr>
-            </tbody>
-          </table>
-        </div>
+        <h2>📊 Suas Extrações Recentes</h2>
+        <table id="jobs-table">
+          <thead>
+            <tr>
+              <th>Busca</th>
+              <th>Horário</th>
+              <th>Status</th>
+              <th>Ação</th>
+            </tr>
+          </thead>
+          <tbody id="jobs-tbody">
+            <tr>
+              <td colspan="4" style="text-align: center; color: var(--text-muted); padding: 2rem;">
+                Carregando suas buscas...
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
   </div>
@@ -482,7 +748,12 @@ APP_PAGE = """<!DOCTYPE html>
 
     async function logout() {
       if (!confirm("Deseja realmente sair?")) return;
-      await fetch('/api/auth/logout', { method: 'POST' });
+      try {
+        await fetch('/api/auth/logout', { method: 'POST' });
+      } catch (err) {
+        console.warn("Servidor offline ou erro no logout:", err);
+      }
+      document.cookie = "session_id=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT;";
       window.location.href = '/login';
     }
 
@@ -507,7 +778,7 @@ APP_PAGE = """<!DOCTYPE html>
             actions = `<a href="/api/download?id=${j.ID}" class="btn-download" target="_blank">⬇ Baixar CSV</a>`;
           } else if (j.Status === 'failed') {
             pill = '<span class="status-pill pill-failed">falhou</span>';
-            actions = `<span style="color: #f87171; font-size: 0.8rem;">Erro</span>`;
+            actions = `<span style="color: #ef4444; font-size: 0.8rem;">Erro</span>`;
           }
           const dateStr = j.Date ? new Date(j.Date).toLocaleTimeString() : '-';
           return `
@@ -520,7 +791,7 @@ APP_PAGE = """<!DOCTYPE html>
           `;
         }).join('');
       } catch (err) {
-        console.error('Erro ao carregar jobs:', err);
+        console.warn('Servidor offline ao carregar jobs:', err);
       }
     }
 
@@ -557,21 +828,25 @@ APP_PAGE = """<!DOCTYPE html>
 
         if (activePollInterval) clearInterval(activePollInterval);
         activePollInterval = setInterval(async () => {
-          const pollRes = await fetch(`/api/job?id=${data.id}`);
-          const job = await pollRes.json();
-          loadJobs();
-          if (job.Status === 'ok') {
-            clearInterval(activePollInterval);
-            statusBox.className = 'status-box done';
-            statusText.innerHTML = `✅ Busca concluída com sucesso! Clique em <strong>Baixar CSV</strong> na tabela.`;
-            btn.disabled = false;
-            btn.innerHTML = '<span>Iniciar Nova Busca</span>';
-          } else if (job.Status === 'failed') {
-            clearInterval(activePollInterval);
-            statusBox.className = 'status-box error';
-            statusText.innerHTML = `❌ A busca falhou. Tente novamente em alguns instantes.`;
-            btn.disabled = false;
-            btn.innerHTML = '<span>Tentar Novamente</span>';
+          try {
+            const pollRes = await fetch(`/api/job?id=${data.id}`);
+            const job = await pollRes.json();
+            loadJobs();
+            if (job.Status === 'ok') {
+              clearInterval(activePollInterval);
+              statusBox.className = 'status-box done';
+              statusText.innerHTML = `✅ Busca concluída com sucesso! Clique em <strong>Baixar CSV</strong> na tabela.`;
+              btn.disabled = false;
+              btn.innerHTML = '<span>Iniciar Nova Busca</span>';
+            } else if (job.Status === 'failed') {
+              clearInterval(activePollInterval);
+              statusBox.className = 'status-box error';
+              statusText.innerHTML = `❌ A busca falhou. Tente novamente em alguns instantes.`;
+              btn.disabled = false;
+              btn.innerHTML = '<span>Tentar Novamente</span>';
+            }
+          } catch (e) {
+            console.warn("Polling de status:", e);
           }
         }, 5000);
 
@@ -587,8 +862,7 @@ APP_PAGE = """<!DOCTYPE html>
     setInterval(loadJobs, 10000);
   </script>
 </body>
-</html>
-"""
+</html>"""
 
 # ── Funções Auxiliares ────────────────────────────────────────────────────────
 def geocode_city(place):
@@ -642,16 +916,25 @@ def process_google_credential(credential):
     return user, session_token, None
 
 # ── Servidor HTTP ─────────────────────────────────────────────────────────────
+def get_cookie_value(cookie_header, name):
+    if not cookie_header:
+        return None
+    for part in cookie_header.split(";"):
+        part = part.strip()
+        if part.startswith(name + "="):
+            val = part[len(name) + 1:].strip()
+            if val.startswith('"') and val.endswith('"') and len(val) >= 2:
+                val = val[1:-1]
+            return val
+    return None
+
 class AuthHandler(http.server.BaseHTTPRequestHandler):
     def get_session_user(self):
         cookie_header = self.headers.get("Cookie", "")
-        if not cookie_header:
+        token = get_cookie_value(cookie_header, "session_id")
+        if not token:
             return None
-        cookies = http.cookies.SimpleCookie(cookie_header)
-        session_token = cookies.get("session_id")
-        if not session_token:
-            return None
-        return db_get_user_by_session(session_token.value)
+        return db_get_user_by_session(token)
 
     def send_session_cookie(self, token, max_age=2592000): # 30 dias
         cookie = f"session_id={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}"
@@ -659,6 +942,39 @@ class AuthHandler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
+
+        # Servir assets estáticos (logo, favicon) publicamente
+        if parsed.path == "/favicon.ico":
+            fav_path = os.path.join(os.path.dirname(__file__), "assets", "favicon.png")
+            if os.path.exists(fav_path):
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.end_headers()
+                with open(fav_path, "rb") as f:
+                    self.wfile.write(f.read())
+                return
+
+        if parsed.path.startswith("/assets/"):
+            asset_name = os.path.basename(parsed.path)
+            asset_path = os.path.join(os.path.dirname(__file__), "assets", asset_name)
+            if os.path.exists(asset_path) and os.path.isfile(asset_path):
+                ext = os.path.splitext(asset_name)[1].lower()
+                mime = "image/png"
+                if ext in [".jpg", ".jpeg"]:
+                    mime = "image/jpeg"
+                elif ext == ".svg":
+                    mime = "image/svg+xml"
+                elif ext == ".ico":
+                    mime = "image/x-icon"
+                self.send_response(200)
+                self.send_header("Content-Type", mime)
+                self.send_header("Cache-Control", "public, max-age=86400")
+                self.end_headers()
+                with open(asset_path, "rb") as f:
+                    self.wfile.write(f.read())
+                return
+
         user = self.get_session_user()
 
         # Rota da tela de login
@@ -676,11 +992,28 @@ class AuthHandler(http.server.BaseHTTPRequestHandler):
             html = LOGIN_PAGE.replace("{{GOOGLE_CLIENT_ID}}", GOOGLE_CLIENT_ID)
             html = html.replace("{{ERROR_MESSAGE}}", err_html)
 
+
+
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Referrer-Policy", "no-referrer-when-downgrade")
+            self.send_header("Cross-Origin-Opener-Policy", "same-origin-allow-popups")
+            self.send_header("Cross-Origin-Embedder-Policy", "unsafe-none")
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
             self.end_headers()
             self.wfile.write(html.encode("utf-8"))
+            return
+
+        # Rota de logout direto via GET
+        elif parsed.path == "/logout":
+            cookie_header = self.headers.get("Cookie", "")
+            token = get_cookie_value(cookie_header, "session_id")
+            if token:
+                db_delete_session(token)
+            self.send_response(302)
+            self.send_header("Set-Cookie", "session_id=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=Lax")
+            self.send_header("Location", "/login")
+            self.end_headers()
             return
 
         # Status da cota de usuários
@@ -879,11 +1212,9 @@ class AuthHandler(http.server.BaseHTTPRequestHandler):
         # 4. Logout
         elif parsed.path == "/api/auth/logout":
             cookie_header = self.headers.get("Cookie", "")
-            if cookie_header:
-                cookies = http.cookies.SimpleCookie(cookie_header)
-                session_token = cookies.get("session_id")
-                if session_token:
-                    db_delete_session(session_token.value)
+            token = get_cookie_value(cookie_header, "session_id")
+            if token:
+                db_delete_session(token)
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Set-Cookie", "session_id=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT")
@@ -955,10 +1286,13 @@ class AuthHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         return
 
+class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
 def run():
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-    socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("", PORT), AuthHandler) as httpd:
+    with ThreadedTCPServer(("", PORT), AuthHandler) as httpd:
         print(f"Painel Web com Autenticacao e Isolamento por Usuario iniciado!")
         print(f"Banco de dados SQLite: {DB_PATH}")
         print(f"Limite maximo: {MAX_USERS} usuarios")
