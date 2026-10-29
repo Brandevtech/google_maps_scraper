@@ -677,6 +677,8 @@ class AuthHandler(http.server.BaseHTTPRequestHandler):
 
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cross-Origin-Opener-Policy", "same-origin-allow-popups")
+            self.send_header("Referrer-Policy", "no-referrer-when-downgrade")
             self.end_headers()
             self.wfile.write(html.encode("utf-8"))
             return
@@ -714,6 +716,8 @@ class AuthHandler(http.server.BaseHTTPRequestHandler):
             html = APP_PAGE.replace("{{USER_NAME}}", user["name"]).replace("{{USER_EMAIL}}", user["email"]).replace("{{USER_AVATAR}}", avatar_html)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cross-Origin-Opener-Policy", "same-origin-allow-popups")
+            self.send_header("Referrer-Policy", "no-referrer-when-downgrade")
             self.end_headers()
             self.wfile.write(html.encode("utf-8"))
             return
