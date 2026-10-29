@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Interface Web Local para o Google Maps Scraper Kit.
 Inclui:
-- Autenticação com Google (Google Identity Services)
+- Autenticação com Google (Google Identity Services com modo Redirect nativo - zero erros de COOP/postMessage)
 - Banco de dados SQLite persistente (users.db)
 - Login automático enquanto a sessão for válida no navegador (cookie HttpOnly de 30 dias)
 - Limite estrito de 3 usuários cadastrados no banco
-- Painel moderno e direto para geração de leads
+- Isolamento total de resultados: cada usuário visualiza e baixa APENAS as suas próprias buscas!
 """
 
 import csv
@@ -45,7 +45,7 @@ load_env_file()
 
 BASE_API = os.environ.get("SCRAPER_BASE_URL") or f"http://localhost:{os.environ.get('SCRAPER_PORT') or '8080'}"
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
-UA = "google-maps-scraper-kit-web/1.2"
+UA = "google-maps-scraper-kit-web/1.3"
 PORT = 5000
 MAX_USERS = 3
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "users.db")
@@ -69,6 +69,16 @@ def init_db():
                 token TEXT PRIMARY KEY,
                 user_id INTEGER NOT NULL,
                 expires_at TIMESTAMP NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                job_id TEXT NOT NULL,
+                job_name TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )
         """)
@@ -165,6 +175,35 @@ def db_delete_session(token):
         cur.execute("DELETE FROM sessions WHERE token = ?", (token,))
         conn.commit()
 
+# Funções de Isolamento de Buscas por Usuário
+def db_add_user_job(user_id, job_id, job_name):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("""
+            INSERT INTO user_jobs (user_id, job_id, job_name)
+            VALUES (?, ?, ?)
+        """, (user_id, job_id, job_name))
+        conn.commit()
+
+def db_get_user_jobs(user_id):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT job_id, job_name, created_at 
+            FROM user_jobs 
+            WHERE user_id = ? 
+            ORDER BY id DESC
+        """, (user_id,))
+        return [dict(r) for r in cur.fetchall()]
+
+def db_user_owns_job(user_id, job_id):
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT 1 FROM user_jobs WHERE user_id = ? AND job_id = ?
+        """, (user_id, job_id))
+        return cur.fetchone() is not None
+
 # ── Templates HTML ────────────────────────────────────────────────────────────
 
 LOGIN_PAGE = """<!DOCTYPE html>
@@ -201,11 +240,7 @@ LOGIN_PAGE = """<!DOCTYPE html>
     .quota-desc { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.5rem; }
 
     .btn-google-container { display: flex; justify-content: center; margin-bottom: 1rem; min-height: 44px; }
-    .dev-box { border-top: 1px dashed var(--border); padding-top: 1.25rem; margin-top: 1.25rem; text-align: left; }
-    .dev-title { font-size: 0.8rem; font-weight: 600; color: #fbbf24; margin-bottom: 0.4rem; display: flex; align-items: center; gap: 0.4rem; }
-    .dev-desc { font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.75rem; }
-    .btn-dev { width: 100%; background: #334155; color: #fff; border: 1px solid #475569; padding: 0.6rem; border-radius: 0.5rem; font-size: 0.8rem; cursor: pointer; font-weight: 500; transition: 0.2s; }
-    .btn-dev:hover { background: #475569; }
+    
 
     .alert { padding: 0.75rem 1rem; border-radius: 0.5rem; font-size: 0.82rem; margin-top: 1rem; text-align: left; display: none; }
     .alert-danger { background: rgba(239, 68, 68, 0.15); border: 1px solid var(--danger); color: #fca5a5; display: block; }
@@ -216,7 +251,7 @@ LOGIN_PAGE = """<!DOCTYPE html>
   <div class="card">
     <div class="logo">📍</div>
     <h1>Acesso ao Scraper</h1>
-    <p class="subtitle">Faça login com a sua conta Google para acessar o painel de geração de leads.</p>
+    <p class="subtitle">Faça login com a sua conta Google para acessar o seu painel de leads exclusivo.</p>
 
     <!-- Indicador de Vagas de Usuários (Limite de 3) -->
     <div class="quota-box">
@@ -230,13 +265,13 @@ LOGIN_PAGE = """<!DOCTYPE html>
       <p id="quota-desc" class="quota-desc">Limite máximo de 3 usuários autorizados.</p>
     </div>
 
-    <!-- Botão Oficial do Google -->
+    <!-- Botão Oficial do Google com Redirect Nativo (Zero erro de COOP / popup) -->
     <div id="google-btn-section">
       <div id="g_id_onload"
            data-client_id="{{GOOGLE_CLIENT_ID}}"
            data-context="signin"
-           data-ux_mode="popup"
-           data-callback="handleGoogleLogin"
+           data-ux_mode="redirect"
+           data-login_uri="/login"
            data-auto_prompt="false">
       </div>
       <div class="btn-google-container">
@@ -252,21 +287,9 @@ LOGIN_PAGE = """<!DOCTYPE html>
     </div>
 
     <!-- Mensagens de Alerta / Erro -->
-    <div id="alert-box" class="alert"></div>
+    <div id="alert-box" class="alert">{{ERROR_MESSAGE}}</div>
 
-    <!-- Modo de Teste Local (caso não tenha configurado o Client ID ainda) -->
-    <div class="dev-box">
-      <div class="dev-title">⚙️ Modo Local / Teste</div>
-      <p class="dev-desc">
-        {% if not has_google_client_id %}
-        <strong>Atenção:</strong> <code>GOOGLE_CLIENT_ID</code> não definido no arquivo <code>.env</code>. Para testar a autenticação e a trava dos 3 usuários agora, use o acesso de teste:
-        {% else %}
-        Você também pode criar uma conta de teste rápida para verificar o limite de 3 usuários:
-        {% endif %}
-      </p>
-      <button onclick="testLogin()" class="btn-dev">Entrar com Usuário de Teste</button>
     </div>
-  </div>
 
   <script>
     async function updateQuota() {
@@ -291,50 +314,7 @@ LOGIN_PAGE = """<!DOCTYPE html>
       }
     }
 
-    async function handleGoogleLogin(response) {
-      showAlert('Autenticando com o Google...', 'success');
-      try {
-        const res = await fetch('/api/auth/google', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ credential: response.credential })
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          showAlert(data.error || 'Falha ao autenticar com Google', 'danger');
-          updateQuota();
-          return;
-        }
-        showAlert('Login realizado com sucesso! Redirecionando...', 'success');
-        setTimeout(() => window.location.href = '/', 600);
-      } catch (err) {
-        showAlert('Erro de conexão ao autenticar.', 'danger');
-      }
-    }
-
-    async function testLogin() {
-      const email = prompt("Digite um e-mail de teste (ou deixe em branco para gerar aleatório):");
-      if (email === null) return;
-      
-      showAlert('Processando acesso de teste...', 'success');
-      try {
-        const res = await fetch('/api/auth/dev-login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: email.trim() })
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          showAlert(data.error || 'Acesso negado.', 'danger');
-          updateQuota();
-          return;
-        }
-        showAlert('Login autorizado! Redirecionando...', 'success');
-        setTimeout(() => window.location.href = '/', 600);
-      } catch (err) {
-        showAlert('Erro ao realizar login de teste.', 'danger');
-      }
-    }
+    
 
     function showAlert(msg, type) {
       const box = document.getElementById('alert-box');
@@ -427,7 +407,7 @@ APP_PAGE = """<!DOCTYPE html>
     <header>
       <div class="header-left">
         <h1>📍 Google Maps Scraper</h1>
-        <span class="badge">Autenticado</span>
+        <span class="badge">Sua Área Privada</span>
       </div>
 
       <div class="user-profile">
@@ -472,10 +452,10 @@ APP_PAGE = """<!DOCTYPE html>
         </div>
       </div>
 
-      <!-- TABELA DE RESULTADOS -->
+      <!-- TABELA DE RESULTADOS EXCLUSIVA DO USUÁRIO -->
       <div class="card">
         <div style="display: flex; justify-content: space-between; align-items: center;">
-          <h2>Tarefas e Resultados</h2>
+          <h2>Suas Buscas Realizadas</h2>
           <button onclick="loadJobs()" style="background: none; border: 1px solid var(--border); color: var(--text-muted); padding: 0.35rem 0.75rem; border-radius: 0.4rem; cursor: pointer; font-size: 0.8rem;">Atualizar Lista</button>
         </div>
         <div style="overflow-x: auto;">
@@ -489,7 +469,7 @@ APP_PAGE = """<!DOCTYPE html>
               </tr>
             </thead>
             <tbody id="jobs-tbody">
-              <tr><td colspan="4" style="text-align: center; color: var(--text-muted); padding: 2rem;">Carregando...</td></tr>
+              <tr><td colspan="4" style="text-align: center; color: var(--text-muted); padding: 2rem;">Carregando suas buscas...</td></tr>
             </tbody>
           </table>
         </div>
@@ -516,7 +496,7 @@ APP_PAGE = """<!DOCTYPE html>
         const jobs = await res.json();
         const tbody = document.getElementById('jobs-tbody');
         if (!jobs || jobs.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-muted); padding: 2rem;">Nenhuma busca realizada ainda.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-muted); padding: 2rem;">Você ainda não fez nenhuma busca. Inicie uma nova busca ao lado!</td></tr>';
           return;
         }
         tbody.innerHTML = jobs.map(j => {
@@ -641,6 +621,26 @@ def verify_google_token(id_token):
         print(f"Erro ao validar token Google: {e}", file=sys.stderr)
     return None
 
+def process_google_credential(credential):
+    """Processa o credential do Google, valida limite de 3 usuários e retorna (user, session_token, error_msg)"""
+    token_data = verify_google_token(credential)
+    if not token_data:
+        return None, None, "Token do Google inválido ou expirado."
+
+    google_id = token_data["sub"]
+    email = token_data["email"].lower()
+    name = token_data.get("name") or email.split("@")[0]
+    picture = token_data.get("picture", "")
+
+    user = db_get_user_by_google_id(google_id) or db_get_user_by_email(email)
+    if not user:
+        if db_get_user_count() >= MAX_USERS:
+            return None, None, "Limite máximo de 3 usuários atingido no sistema. Novos cadastros estão bloqueados."
+        user = db_create_user(google_id, email, name, picture)
+
+    session_token = db_create_session(user["id"], days=30)
+    return user, session_token, None
+
 # ── Servidor HTTP ─────────────────────────────────────────────────────────────
 class AuthHandler(http.server.BaseHTTPRequestHandler):
     def get_session_user(self):
@@ -669,21 +669,21 @@ class AuthHandler(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 return
 
+            qs = urllib.parse.parse_qs(parsed.query)
+            err = qs.get("error", [""])[0]
+            err_html = f'<div class="alert alert-danger" style="display:block;">{err}</div>' if err else ''
+
             html = LOGIN_PAGE.replace("{{GOOGLE_CLIENT_ID}}", GOOGLE_CLIENT_ID)
-            has_client_id = bool(GOOGLE_CLIENT_ID)
-            html = html.replace("{% if not has_google_client_id %}", "" if not has_client_id else "<!--")
-            html = html.replace("{% else %}", "" if not has_client_id else "-->")
-            html = html.replace("{% endif %}", "")
+            html = html.replace("{{ERROR_MESSAGE}}", err_html)
 
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Cross-Origin-Opener-Policy", "same-origin-allow-popups")
             self.send_header("Referrer-Policy", "no-referrer-when-downgrade")
             self.end_headers()
             self.wfile.write(html.encode("utf-8"))
             return
 
-        # Rota de status público de autenticação
+        # Status da cota de usuários
         elif parsed.path == "/api/auth/status":
             count = db_get_user_count()
             self.send_response(200)
@@ -716,20 +716,52 @@ class AuthHandler(http.server.BaseHTTPRequestHandler):
             html = APP_PAGE.replace("{{USER_NAME}}", user["name"]).replace("{{USER_EMAIL}}", user["email"]).replace("{{USER_AVATAR}}", avatar_html)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Cross-Origin-Opener-Policy", "same-origin-allow-popups")
-            self.send_header("Referrer-Policy", "no-referrer-when-downgrade")
             self.end_headers()
             self.wfile.write(html.encode("utf-8"))
             return
 
+        # Listagem de jobs ISOLADA por usuário
         elif parsed.path == "/api/jobs":
             try:
+                # 1. Recupera do SQLite apenas as buscas criadas por este usuário
+                my_db_jobs = db_get_user_jobs(user["id"])
+                if not my_db_jobs:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(b"[]")
+                    return
+
+                # 2. Busca lista do motor gosom
                 raw = scraper_req("GET", "/api/v1/jobs")
-                jobs = json.loads(raw) or []
+                all_engine_jobs = json.loads(raw) or []
+                engine_jobs_map = {j["ID"]: j for j in all_engine_jobs if "ID" in j}
+
+                # 3. Filtra apenas os jobs do usuário
+                user_job_list = []
+                for db_j in my_db_jobs:
+                    jid = db_j["job_id"]
+                    if jid in engine_jobs_map:
+                        user_job_list.append(engine_jobs_map[jid])
+                    else:
+                        # Consulta o status direto caso ainda não esteja na lista principal
+                        try:
+                            item_raw = scraper_req("GET", f"/api/v1/jobs/{jid}")
+                            item_data = json.loads(item_raw)
+                            if item_data:
+                                user_job_list.append(item_data)
+                        except Exception:
+                            user_job_list.append({
+                                "ID": jid,
+                                "Name": db_j["job_name"],
+                                "Date": db_j["created_at"],
+                                "Status": "working"
+                            })
+
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                self.wfile.write(json.dumps(jobs).encode())
+                self.wfile.write(json.dumps(user_job_list).encode())
             except Exception as e:
                 self.send_response(500)
                 self.send_header("Content-Type", "application/json")
@@ -740,6 +772,13 @@ class AuthHandler(http.server.BaseHTTPRequestHandler):
         elif parsed.path == "/api/job":
             qs = urllib.parse.parse_qs(parsed.query)
             job_id = qs.get("id", [""])[0]
+            # Validação de isolamento: usuário só acessa job próprio!
+            if not db_user_owns_job(user["id"], job_id):
+                self.send_response(403)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Acesso negado: este resultado pertence a outro usuário."}).encode())
+                return
             try:
                 raw = scraper_req("GET", f"/api/v1/jobs/{job_id}")
                 self.send_response(200)
@@ -756,6 +795,13 @@ class AuthHandler(http.server.BaseHTTPRequestHandler):
         elif parsed.path == "/api/download":
             qs = urllib.parse.parse_qs(parsed.query)
             job_id = qs.get("id", [""])[0]
+            # Validação de isolamento: usuário só baixa lead de busca própria!
+            if not db_user_owns_job(user["id"], job_id):
+                self.send_response(403)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Acesso negado: este arquivo pertence a outro usuário."}).encode())
+                return
             try:
                 req = urllib.request.Request(f"{BASE_API}/api/v1/jobs/{job_id}/download")
                 with urllib.request.urlopen(req, timeout=30) as resp:
@@ -776,42 +822,46 @@ class AuthHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         content_len = int(self.headers.get("Content-Length", 0))
-        body_bytes = self.rfile.read(content_len) if content_len > 0 else b"{}"
+        body_bytes = self.rfile.read(content_len) if content_len > 0 else b""
 
-        # 1. Login com Google
-        if parsed.path == "/api/auth/google":
+        # 1. Callback de Login do Google via Redirect (Nativo do Google GIS)
+        if parsed.path == "/login":
+            form_data = urllib.parse.parse_qs(body_bytes.decode("utf-8", "replace"))
+            credential = form_data.get("credential", [""])[0]
+            if not credential:
+                self.send_response(302)
+                self.send_header("Location", "/login?error=" + urllib.parse.quote("Credencial do Google não recebida."))
+                self.end_headers()
+                return
+
+            user, session_token, error_msg = process_google_credential(credential)
+            if error_msg:
+                self.send_response(302)
+                self.send_header("Location", "/login?error=" + urllib.parse.quote(error_msg))
+                self.end_headers()
+                return
+
+            # Login efetuado com sucesso -> Redireciona para o painel com cookie de 30 dias!
+            self.send_response(302)
+            self.send_header("Location", "/")
+            self.send_session_cookie(session_token)
+            self.end_headers()
+            return
+
+        # 2. Login Google via API JSON (Popup fallback)
+        elif parsed.path == "/api/auth/google":
             try:
                 data = json.loads(body_bytes.decode())
                 credential = data.get("credential")
-                if not credential:
-                    raise ValueError("Credential do Google ausente.")
-
-                token_data = verify_google_token(credential)
-                if not token_data:
-                    self.send_response(401)
+                user, session_token, error_msg = process_google_credential(credential)
+                if error_msg:
+                    status_code = 403 if "Limite" in error_msg else 401
+                    self.send_response(status_code)
                     self.send_header("Content-Type", "application/json")
                     self.end_headers()
-                    self.wfile.write(json.dumps({"error": "Token do Google inválido ou expirado."}).encode())
+                    self.wfile.write(json.dumps({"error": error_msg}).encode())
                     return
 
-                google_id = token_data["sub"]
-                email = token_data["email"].lower()
-                name = token_data.get("name") or email.split("@")[0]
-                picture = token_data.get("picture", "")
-
-                user = db_get_user_by_google_id(google_id) or db_get_user_by_email(email)
-                if not user:
-                    if db_get_user_count() >= MAX_USERS:
-                        self.send_response(403)
-                        self.send_header("Content-Type", "application/json")
-                        self.end_headers()
-                        self.wfile.write(json.dumps({
-                            "error": "Limite máximo de 3 usuários atingido no sistema. Novos cadastros estão bloqueados."
-                        }).encode())
-                        return
-                    user = db_create_user(google_id, email, name, picture)
-
-                session_token = db_create_session(user["id"], days=30)
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_session_cookie(session_token)
@@ -825,46 +875,8 @@ class AuthHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({"error": str(e)}).encode())
                 return
 
-        # 2. Login de Teste / Dev
-        elif parsed.path == "/api/auth/dev-login":
-            try:
-                data = json.loads(body_bytes.decode()) if body_bytes else {}
-                email = data.get("email")
-                if not email:
-                    user_count = db_get_user_count()
-                    email = f"user{user_count + 1}@teste.local"
-                email = email.lower()
-                google_id = f"dev_{email}"
-                name = email.split("@")[0].capitalize()
-                picture = ""
-
-                user = db_get_user_by_email(email)
-                if not user:
-                    if db_get_user_count() >= MAX_USERS:
-                        self.send_response(403)
-                        self.send_header("Content-Type", "application/json")
-                        self.end_headers()
-                        self.wfile.write(json.dumps({
-                            "error": f"Limite máximo de {MAX_USERS} usuários atingido no banco de dados. Novos usuários bloqueados."
-                        }).encode())
-                        return
-                    user = db_create_user(google_id, email, name, picture)
-
-                session_token = db_create_session(user["id"], days=30)
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_session_cookie(session_token)
-                self.end_headers()
-                self.wfile.write(json.dumps({"ok": True, "user": {"name": user["name"], "email": user["email"]}}).encode())
-                return
-            except Exception as e:
-                self.send_response(400)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(json.dumps({"error": str(e)}).encode())
-                return
-
-        # 3. Logout
+        
+        # 4. Logout
         elif parsed.path == "/api/auth/logout":
             cookie_header = self.headers.get("Cookie", "")
             if cookie_header:
@@ -888,6 +900,7 @@ class AuthHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(json.dumps({"error": "Não autorizado."}).encode())
             return
 
+        # Início de Scraping - VINCULADO AO USUÁRIO
         if parsed.path == "/api/start":
             data = json.loads(body_bytes.decode())
             keyword = data.get("keyword")
@@ -921,6 +934,10 @@ class AuthHandler(http.server.BaseHTTPRequestHandler):
                 raw = scraper_req("POST", "/api/v1/jobs", payload)
                 resp_data = json.loads(raw)
                 job_id = resp_data.get("id")
+
+                # Grava no SQLite a relação: este job pertence exclusivamente a este user_id
+                db_add_user_job(user["id"], job_id, job_name)
+
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
@@ -942,7 +959,7 @@ def run():
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     socketserver.TCPServer.allow_reuse_address = True
     with socketserver.TCPServer(("", PORT), AuthHandler) as httpd:
-        print(f"Painel Web com Autenticacao iniciado!")
+        print(f"Painel Web com Autenticacao e Isolamento por Usuario iniciado!")
         print(f"Banco de dados SQLite: {DB_PATH}")
         print(f"Limite maximo: {MAX_USERS} usuarios")
         print(f"Acesse: http://localhost:{PORT}")
