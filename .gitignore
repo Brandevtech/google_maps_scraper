@@ -1,5 +1,6 @@
 # Secrets
 .env
+*.db*
 
 # Scrape outputs (may contain personal data — never commit)
 *.csv

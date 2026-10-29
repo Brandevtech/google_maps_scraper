@@ -59,6 +59,18 @@ py web_ui.py
 
 Digite o que quer buscar, a cidade/estado (ex: `Curitiba, PR` ou `São Paulo, SP`), acompanhe o progresso em tempo real e faça o download do CSV direto pela tela.
 
+#### 🔐 Autenticação Google & Limite de Usuários:
+- **Banco de Dados Local (SQLite):** Mantém os usuários cadastrados e sessões ativas com login automático contínuo (cookie seguro de 30 dias).
+- **Limite Estrito:** Apenas os **3 primeiros usuários** que logarem têm acesso ao sistema. O 4º cadastro em diante é bloqueado automaticamente.
+- **Configuração do Google OAuth:**
+  1. No [Google Cloud Console](https://console.cloud.google.com/apis/credentials), crie um OAuth 2.0 Client ID (tipo Web Application).
+  2. Adicione `http://localhost:5000` em *Authorized JavaScript origins*.
+  3. Adicione o Client ID no seu arquivo `.env`:
+     ```env
+     GOOGLE_CLIENT_ID=seu-client-id.apps.googleusercontent.com
+     ```
+  *(O painel também inclui um modo de login local para testes rápidos antes de configurar o OAuth do Google).*
+
 ---
 
 ### Opção 2: Linha de Comando (CLI Python)

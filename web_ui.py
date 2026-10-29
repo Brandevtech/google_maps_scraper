@@ -1,15 +1,23 @@
 #!/usr/bin/env python3
 """Interface Web Local para o Google Maps Scraper Kit.
-Roda 100% com a biblioteca padrão do Python (sem pip install).
-Serve em http://localhost:5000
+Inclui:
+- Autenticação com Google (Google Identity Services)
+- Banco de dados SQLite persistente (users.db)
+- Login automático enquanto a sessão for válida no navegador (cookie HttpOnly de 30 dias)
+- Limite estrito de 3 usuários cadastrados no banco
+- Painel moderno e direto para geração de leads
 """
 
 import csv
+import datetime
+import http.cookies
 import http.server
 import io
 import json
 import os
+import secrets
 import socketserver
+import sqlite3
 import sys
 import threading
 import time
@@ -17,60 +25,399 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-BASE_API = os.environ.get("SCRAPER_BASE_URL") or f"http://localhost:{os.environ.get('SCRAPER_PORT') or '8080'}"
-UA = "google-maps-scraper-kit-web/1.0"
-PORT = 5000
+# ── Configurações e Variáveis de Ambiente ──────────────────────────────────────
+def load_env_file():
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if os.path.exists(env_path):
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        k, v = k.strip(), v.strip().strip("\"'")
+                        if k not in os.environ:
+                            os.environ[k] = v
+        except Exception:
+            pass
 
-HTML_PAGE = """<!DOCTYPE html>
+load_env_file()
+
+BASE_API = os.environ.get("SCRAPER_BASE_URL") or f"http://localhost:{os.environ.get('SCRAPER_PORT') or '8080'}"
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+UA = "google-maps-scraper-kit-web/1.2"
+PORT = 5000
+MAX_USERS = 3
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "users.db")
+
+# ── Banco de Dados SQLite ─────────────────────────────────────────────────────
+def init_db():
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                google_id TEXT UNIQUE NOT NULL,
+                email TEXT UNIQUE NOT NULL,
+                name TEXT NOT NULL,
+                picture TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                token TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                expires_at TIMESTAMP NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        """)
+        conn.commit()
+
+init_db()
+
+def db_get_user_count():
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM users")
+        return cur.fetchone()[0]
+
+def db_get_user_by_google_id(google_id):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM users WHERE google_id = ?", (google_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+def db_get_user_by_email(email):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM users WHERE email = ?", (email,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+def db_get_user_by_id(user_id):
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+def db_create_user(google_id, email, name, picture):
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO users (google_id, email, name, picture)
+            VALUES (?, ?, ?, ?)
+        """, (google_id, email, name, picture))
+        user_id = cur.lastrowid
+        conn.commit()
+        return db_get_user_by_id(user_id)
+
+def db_create_session(user_id, days=30):
+    token = secrets.token_hex(32)
+    expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=days)
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO sessions (token, user_id, expires_at)
+            VALUES (?, ?, ?)
+        """, (token, user_id, expires_at.isoformat()))
+        conn.commit()
+    return token
+
+def db_get_user_by_session(token):
+    if not token:
+        return None
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT u.*, s.expires_at 
+            FROM sessions s
+            JOIN users u ON s.user_id = u.id
+            WHERE s.token = ?
+        """, (token,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        expires_str = row["expires_at"]
+        try:
+            expires_at = datetime.datetime.fromisoformat(expires_str)
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=datetime.timezone.utc)
+            if datetime.datetime.now(datetime.timezone.utc) > expires_at:
+                cur.execute("DELETE FROM sessions WHERE token = ?", (token,))
+                conn.commit()
+                return None
+        except Exception:
+            return None
+        return dict(row)
+
+def db_delete_session(token):
+    if not token:
+        return
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM sessions WHERE token = ?", (token,))
+        conn.commit()
+
+# ── Templates HTML ────────────────────────────────────────────────────────────
+
+LOGIN_PAGE = """<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Google Maps Scraper - Painel de Controle</title>
+  <title>Login - Google Maps Scraper</title>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
   <style>
     :root {
       --primary: #2563eb;
       --primary-hover: #1d4ed8;
-      --bg: #0f172a;
+      --bg: #0b1220;
+      --surface: #1e293b;
+      --border: #334155;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --danger: #ef4444;
+      --success: #10b981;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background: var(--bg); color: var(--text); display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 1.5rem; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 1rem; width: 100%; max-width: 440px; padding: 2.2rem; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.4); text-align: center; }
+    .logo { font-size: 2.5rem; margin-bottom: 0.5rem; }
+    h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; }
+    .subtitle { color: var(--text-muted); font-size: 0.88rem; margin-bottom: 1.75rem; line-height: 1.4; }
+    
+    .quota-box { background: rgba(15, 23, 42, 0.8); border: 1px solid var(--border); border-radius: 0.75rem; padding: 1rem; margin-bottom: 1.75rem; text-align: left; }
+    .quota-header { display: flex; justify-content: space-between; font-size: 0.8rem; font-weight: 600; margin-bottom: 0.5rem; }
+    .quota-bar-bg { width: 100%; height: 8px; background: #334155; border-radius: 999px; overflow: hidden; }
+    .quota-bar-fill { height: 100%; background: var(--primary); transition: width 0.3s; }
+    .quota-bar-fill.full { background: var(--danger); }
+    .quota-desc { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.5rem; }
+
+    .btn-google-container { display: flex; justify-content: center; margin-bottom: 1rem; min-height: 44px; }
+    .dev-box { border-top: 1px dashed var(--border); padding-top: 1.25rem; margin-top: 1.25rem; text-align: left; }
+    .dev-title { font-size: 0.8rem; font-weight: 600; color: #fbbf24; margin-bottom: 0.4rem; display: flex; align-items: center; gap: 0.4rem; }
+    .dev-desc { font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.75rem; }
+    .btn-dev { width: 100%; background: #334155; color: #fff; border: 1px solid #475569; padding: 0.6rem; border-radius: 0.5rem; font-size: 0.8rem; cursor: pointer; font-weight: 500; transition: 0.2s; }
+    .btn-dev:hover { background: #475569; }
+
+    .alert { padding: 0.75rem 1rem; border-radius: 0.5rem; font-size: 0.82rem; margin-top: 1rem; text-align: left; display: none; }
+    .alert-danger { background: rgba(239, 68, 68, 0.15); border: 1px solid var(--danger); color: #fca5a5; display: block; }
+    .alert-success { background: rgba(16, 185, 129, 0.15); border: 1px solid var(--success); color: #86efac; display: block; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">📍</div>
+    <h1>Acesso ao Scraper</h1>
+    <p class="subtitle">Faça login com a sua conta Google para acessar o painel de geração de leads.</p>
+
+    <!-- Indicador de Vagas de Usuários (Limite de 3) -->
+    <div class="quota-box">
+      <div class="quota-header">
+        <span>Vagas de Usuários</span>
+        <span id="quota-text">Carregando...</span>
+      </div>
+      <div class="quota-bar-bg">
+        <div id="quota-fill" class="quota-bar-fill" style="width: 0%;"></div>
+      </div>
+      <p id="quota-desc" class="quota-desc">Limite máximo de 3 usuários autorizados.</p>
+    </div>
+
+    <!-- Botão Oficial do Google -->
+    <div id="google-btn-section">
+      <div id="g_id_onload"
+           data-client_id="{{GOOGLE_CLIENT_ID}}"
+           data-context="signin"
+           data-ux_mode="popup"
+           data-callback="handleGoogleLogin"
+           data-auto_prompt="false">
+      </div>
+      <div class="btn-google-container">
+        <div class="g_id_signin"
+             data-type="standard"
+             data-shape="rectangular"
+             data-theme="outline"
+             data-text="signin_with"
+             data-size="large"
+             data-logo_alignment="left">
+        </div>
+      </div>
+    </div>
+
+    <!-- Mensagens de Alerta / Erro -->
+    <div id="alert-box" class="alert"></div>
+
+    <!-- Modo de Teste Local (caso não tenha configurado o Client ID ainda) -->
+    <div class="dev-box">
+      <div class="dev-title">⚙️ Modo Local / Teste</div>
+      <p class="dev-desc">
+        {% if not has_google_client_id %}
+        <strong>Atenção:</strong> <code>GOOGLE_CLIENT_ID</code> não definido no arquivo <code>.env</code>. Para testar a autenticação e a trava dos 3 usuários agora, use o acesso de teste:
+        {% else %}
+        Você também pode criar uma conta de teste rápida para verificar o limite de 3 usuários:
+        {% endif %}
+      </p>
+      <button onclick="testLogin()" class="btn-dev">Entrar com Usuário de Teste</button>
+    </div>
+  </div>
+
+  <script>
+    async function updateQuota() {
+      try {
+        const res = await fetch('/api/auth/status');
+        const data = await res.json();
+        const count = data.user_count;
+        const max = data.max_users;
+        const pct = Math.min(100, Math.round((count / max) * 100));
+
+        document.getElementById('quota-text').textContent = `${count} de ${max} cadastrados`;
+        const fill = document.getElementById('quota-fill');
+        fill.style.width = pct + '%';
+        if (count >= max) {
+          fill.classList.add('full');
+          document.getElementById('quota-desc').innerHTML = '⚠️ <strong>Limite atingido.</strong> Apenas os 3 usuários já cadastrados podem entrar.';
+        } else {
+          document.getElementById('quota-desc').textContent = `${max - count} vaga(s) restante(s). Novos usuários serão cadastrados automaticamente.`;
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    async function handleGoogleLogin(response) {
+      showAlert('Autenticando com o Google...', 'success');
+      try {
+        const res = await fetch('/api/auth/google', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ credential: response.credential })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          showAlert(data.error || 'Falha ao autenticar com Google', 'danger');
+          updateQuota();
+          return;
+        }
+        showAlert('Login realizado com sucesso! Redirecionando...', 'success');
+        setTimeout(() => window.location.href = '/', 600);
+      } catch (err) {
+        showAlert('Erro de conexão ao autenticar.', 'danger');
+      }
+    }
+
+    async function testLogin() {
+      const email = prompt("Digite um e-mail de teste (ou deixe em branco para gerar aleatório):");
+      if (email === null) return;
+      
+      showAlert('Processando acesso de teste...', 'success');
+      try {
+        const res = await fetch('/api/auth/dev-login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: email.trim() })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          showAlert(data.error || 'Acesso negado.', 'danger');
+          updateQuota();
+          return;
+        }
+        showAlert('Login autorizado! Redirecionando...', 'success');
+        setTimeout(() => window.location.href = '/', 600);
+      } catch (err) {
+        showAlert('Erro ao realizar login de teste.', 'danger');
+      }
+    }
+
+    function showAlert(msg, type) {
+      const box = document.getElementById('alert-box');
+      box.textContent = msg;
+      box.className = 'alert alert-' + type;
+      box.style.display = 'block';
+    }
+
+    updateQuota();
+  </script>
+</body>
+</html>
+"""
+
+APP_PAGE = """<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Google Maps Scraper - Painel</title>
+  <style>
+    :root {
+      --primary: #2563eb;
+      --primary-hover: #1d4ed8;
+      --bg: #0b1220;
       --surface: #1e293b;
       --border: #334155;
       --text: #f8fafc;
       --text-muted: #94a3b8;
       --success: #10b981;
       --warning: #f59e0b;
+      --danger: #ef4444;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
     body { background: var(--bg); color: var(--text); padding: 2rem; min-height: 100vh; }
     .container { max-width: 1100px; margin: 0 auto; }
-    header { margin-bottom: 2rem; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 1.5rem; }
-    h1 { font-size: 1.8rem; display: flex; align-items: center; gap: 0.75rem; }
-    .badge { font-size: 0.8rem; background: #064e3b; color: #34d399; padding: 0.25rem 0.6rem; border-radius: 999px; font-weight: 600; }
+    
+    header { margin-bottom: 2rem; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 1.25rem; flex-wrap: wrap; gap: 1rem; }
+    .header-left { display: flex; align-items: center; gap: 0.75rem; }
+    h1 { font-size: 1.6rem; display: flex; align-items: center; gap: 0.5rem; }
+    .badge { font-size: 0.75rem; background: #064e3b; color: #34d399; padding: 0.2rem 0.5rem; border-radius: 999px; font-weight: 600; }
+    
+    .user-profile { display: flex; align-items: center; gap: 0.75rem; background: rgba(30, 41, 59, 0.7); padding: 0.4rem 0.75rem; border-radius: 999px; border: 1px solid var(--border); }
+    .user-avatar { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; background: #3b82f6; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.85rem; color: #fff; }
+    .user-info { font-size: 0.8rem; line-height: 1.2; }
+    .user-name { font-weight: 600; color: #fff; }
+    .user-email { color: var(--text-muted); font-size: 0.72rem; }
+    .btn-logout { background: none; border: none; color: #f87171; cursor: pointer; font-size: 0.8rem; font-weight: 600; margin-left: 0.5rem; padding: 0.2rem 0.4rem; border-radius: 0.3rem; transition: 0.2s; }
+    .btn-logout:hover { background: rgba(239, 68, 68, 0.15); }
+
     .layout { display: grid; grid-template-columns: 360px 1fr; gap: 2rem; }
     @media (max-width: 850px) { .layout { grid-template-columns: 1fr; } }
+    
     .card { background: var(--surface); border: 1px solid var(--border); border-radius: 0.75rem; padding: 1.5rem; }
-    .card h2 { font-size: 1.2rem; margin-bottom: 1.25rem; color: var(--text); }
+    .card h2 { font-size: 1.15rem; margin-bottom: 1.25rem; color: var(--text); }
     .form-group { margin-bottom: 1.25rem; }
-    label { display: block; font-size: 0.875rem; font-weight: 500; margin-bottom: 0.5rem; color: var(--text-muted); }
+    label { display: block; font-size: 0.85rem; font-weight: 500; margin-bottom: 0.45rem; color: var(--text-muted); }
     input[type="text"], input[type="number"] { width: 100%; padding: 0.65rem 0.85rem; background: #0f172a; border: 1px solid var(--border); border-radius: 0.5rem; color: #fff; font-size: 0.95rem; }
     input:focus { outline: none; border-color: var(--primary); }
     .help-text { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem; }
+    
     button.btn { width: 100%; padding: 0.75rem; background: var(--primary); color: white; border: none; border-radius: 0.5rem; font-weight: 600; cursor: pointer; transition: 0.2s; display: flex; align-items: center; justify-content: center; gap: 0.5rem; }
     button.btn:hover { background: var(--primary-hover); }
     button.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    
     .status-box { margin-top: 1.25rem; padding: 0.75rem; border-radius: 0.5rem; font-size: 0.85rem; display: none; }
     .status-box.active { display: block; background: #1e1b4b; border: 1px solid #4338ca; color: #c7d2fe; }
     .status-box.done { display: block; background: #064e3b; border: 1px solid #059669; color: #a7f3d0; }
     .status-box.error { display: block; background: #450a0a; border: 1px solid #dc2626; color: #fecaca; }
+    
     table { width: 100%; border-collapse: collapse; margin-top: 1rem; font-size: 0.875rem; }
     th, td { text-align: left; padding: 0.75rem; border-bottom: 1px solid var(--border); }
     th { color: var(--text-muted); font-weight: 600; background: #0f172a; }
     tr:hover { background: rgba(255,255,255,0.02); }
+    
     .status-pill { padding: 0.2rem 0.6rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }
     .pill-ok { background: #064e3b; color: #34d399; }
     .pill-working { background: #78350f; color: #fbbf24; }
     .pill-failed { background: #7f1d1d; color: #f87171; }
+    
     .btn-download { display: inline-block; padding: 0.35rem 0.75rem; background: #059669; color: white; border-radius: 0.35rem; text-decoration: none; font-size: 0.75rem; font-weight: 600; }
     .btn-download:hover { background: #047857; }
+    
     .spinner { border: 2px solid rgba(255,255,255,0.2); border-left-color: #fff; border-radius: 50%; width: 16px; height: 16px; animation: spin 0.8s linear infinite; display: inline-block; }
     @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
   </style>
@@ -78,8 +425,19 @@ HTML_PAGE = """<!DOCTYPE html>
 <body>
   <div class="container">
     <header>
-      <h1>📍 Google Maps Scraper <span class="badge">Pronto</span></h1>
-      <span style="font-size: 0.85rem; color: var(--text-muted);">API local conectada na porta 8080</span>
+      <div class="header-left">
+        <h1>📍 Google Maps Scraper</h1>
+        <span class="badge">Autenticado</span>
+      </div>
+
+      <div class="user-profile">
+        {{USER_AVATAR}}
+        <div class="user-info">
+          <div class="user-name">{{USER_NAME}}</div>
+          <div class="user-email">{{USER_EMAIL}}</div>
+        </div>
+        <button onclick="logout()" class="btn-logout" title="Sair do painel">Sair 🚪</button>
+      </div>
     </header>
 
     <div class="layout">
@@ -101,7 +459,7 @@ HTML_PAGE = """<!DOCTYPE html>
           <div class="form-group">
             <label for="depth">Profundidade (Qtd. de páginas/rolagens)</label>
             <input type="number" id="depth" value="2" min="1" max="20">
-            <div class="help-text">1 a 3 para testes rápidos; 5 a 10 para buscas completas.</div>
+            <div class="help-text">1 a 3 para testes rápidos; 5 a 10 para listas completas.</div>
           </div>
 
           <button type="submit" id="submit-btn" class="btn">
@@ -142,9 +500,19 @@ HTML_PAGE = """<!DOCTYPE html>
   <script>
     let activePollInterval = null;
 
+    async function logout() {
+      if (!confirm("Deseja realmente sair?")) return;
+      await fetch('/api/auth/logout', { method: 'POST' });
+      window.location.href = '/login';
+    }
+
     async function loadJobs() {
       try {
         const res = await fetch('/api/jobs');
+        if (res.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
         const jobs = await res.json();
         const tbody = document.getElementById('jobs-tbody');
         if (!jobs || jobs.length === 0) {
@@ -197,13 +565,16 @@ HTML_PAGE = """<!DOCTYPE html>
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ keyword, city, depth })
         });
+        if (res.status === 401) {
+          window.location.href = '/login';
+          return;
+        }
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Falha ao iniciar busca');
 
         statusText.innerHTML = `Busca <strong>${data.name}</strong> em andamento! Acompanhe na tabela ao lado.`;
         loadJobs();
 
-        // Polling do job
         if (activePollInterval) clearInterval(activePollInterval);
         activePollInterval = setInterval(async () => {
           const pollRes = await fetch(`/api/job?id=${data.id}`);
@@ -232,7 +603,6 @@ HTML_PAGE = """<!DOCTYPE html>
       }
     }
 
-    // Carrega a lista ao abrir a tela
     loadJobs();
     setInterval(loadJobs, 10000);
   </script>
@@ -240,8 +610,8 @@ HTML_PAGE = """<!DOCTYPE html>
 </html>
 """
 
+# ── Funções Auxiliares ────────────────────────────────────────────────────────
 def geocode_city(place):
-    """Consulta OpenStreetMap Nominatim para pegar latitude e longitude"""
     q = urllib.parse.urlencode({"format": "json", "limit": 1, "q": place})
     url = f"https://nominatim.openstreetmap.org/search?{q}"
     req = urllib.request.Request(url, headers={"User-Agent": UA})
@@ -252,21 +622,100 @@ def geocode_city(place):
     return None, None
 
 def scraper_req(method, path, body=None):
-    """Encaminha requisição para a engine local gosom na porta 8080"""
     data = json.dumps(body).encode() if body is not None else None
     headers = {"Content-Type": "application/json", "User-Agent": UA}
     req = urllib.request.Request(BASE_API + path, data=data, headers=headers, method=method)
     with urllib.request.urlopen(req, timeout=30) as resp:
         return resp.read()
 
-class Handler(http.server.BaseHTTPRequestHandler):
+def verify_google_token(id_token):
+    """Valida o token JWT diretamente com a API oficial do Google"""
+    url = f"https://oauth2.googleapis.com/tokeninfo?id_token={urllib.parse.quote(id_token)}"
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            if "sub" in data and "email" in data:
+                return data
+    except Exception as e:
+        print(f"Erro ao validar token Google: {e}", file=sys.stderr)
+    return None
+
+# ── Servidor HTTP ─────────────────────────────────────────────────────────────
+class AuthHandler(http.server.BaseHTTPRequestHandler):
+    def get_session_user(self):
+        cookie_header = self.headers.get("Cookie", "")
+        if not cookie_header:
+            return None
+        cookies = http.cookies.SimpleCookie(cookie_header)
+        session_token = cookies.get("session_id")
+        if not session_token:
+            return None
+        return db_get_user_by_session(session_token.value)
+
+    def send_session_cookie(self, token, max_age=2592000): # 30 dias
+        cookie = f"session_id={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}"
+        self.send_header("Set-Cookie", cookie)
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
-        if parsed.path == "/" or parsed.path == "/index.html":
+        user = self.get_session_user()
+
+        # Rota da tela de login
+        if parsed.path == "/login":
+            if user:
+                self.send_response(302)
+                self.send_header("Location", "/")
+                self.end_headers()
+                return
+
+            html = LOGIN_PAGE.replace("{{GOOGLE_CLIENT_ID}}", GOOGLE_CLIENT_ID)
+            has_client_id = bool(GOOGLE_CLIENT_ID)
+            html = html.replace("{% if not has_google_client_id %}", "" if not has_client_id else "<!--")
+            html = html.replace("{% else %}", "" if not has_client_id else "-->")
+            html = html.replace("{% endif %}", "")
+
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            self.wfile.write(HTML_PAGE.encode("utf-8"))
+            self.wfile.write(html.encode("utf-8"))
+            return
+
+        # Rota de status público de autenticação
+        elif parsed.path == "/api/auth/status":
+            count = db_get_user_count()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "user_count": count,
+                "max_users": MAX_USERS,
+                "is_full": count >= MAX_USERS,
+                "google_configured": bool(GOOGLE_CLIENT_ID)
+            }).encode())
+            return
+
+        # Todas as outras rotas exigem sessão válida!
+        if not user:
+            if parsed.path.startswith("/api/"):
+                self.send_response(401)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Não autorizado. Faça login primeiro."}).encode())
+            else:
+                self.send_response(302)
+                self.send_header("Location", "/login")
+                self.end_headers()
+            return
+
+        # Painel Principal (/)
+        if parsed.path == "/" or parsed.path == "/index.html":
+            avatar_html = f'<img src="{user["picture"]}" class="user-avatar" alt="Avatar">' if user.get("picture") else f'<div class="user-avatar">{user["name"][:1].upper()}</div>'
+            html = APP_PAGE.replace("{{USER_NAME}}", user["name"]).replace("{{USER_EMAIL}}", user["email"]).replace("{{USER_AVATAR}}", avatar_html)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(html.encode("utf-8"))
             return
 
         elif parsed.path == "/api/jobs":
@@ -322,25 +771,133 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
-        if parsed.path == "/api/start":
-            content_len = int(self.headers.get("Content-Length", 0))
-            body_bytes = self.rfile.read(content_len)
-            data = json.loads(body_bytes.decode())
+        content_len = int(self.headers.get("Content-Length", 0))
+        body_bytes = self.rfile.read(content_len) if content_len > 0 else b"{}"
 
+        # 1. Login com Google
+        if parsed.path == "/api/auth/google":
+            try:
+                data = json.loads(body_bytes.decode())
+                credential = data.get("credential")
+                if not credential:
+                    raise ValueError("Credential do Google ausente.")
+
+                token_data = verify_google_token(credential)
+                if not token_data:
+                    self.send_response(401)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"error": "Token do Google inválido ou expirado."}).encode())
+                    return
+
+                google_id = token_data["sub"]
+                email = token_data["email"].lower()
+                name = token_data.get("name") or email.split("@")[0]
+                picture = token_data.get("picture", "")
+
+                user = db_get_user_by_google_id(google_id) or db_get_user_by_email(email)
+                if not user:
+                    if db_get_user_count() >= MAX_USERS:
+                        self.send_response(403)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({
+                            "error": "Limite máximo de 3 usuários atingido no sistema. Novos cadastros estão bloqueados."
+                        }).encode())
+                        return
+                    user = db_create_user(google_id, email, name, picture)
+
+                session_token = db_create_session(user["id"], days=30)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_session_cookie(session_token)
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": True, "user": {"name": user["name"], "email": user["email"]}}).encode())
+                return
+            except Exception as e:
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode())
+                return
+
+        # 2. Login de Teste / Dev
+        elif parsed.path == "/api/auth/dev-login":
+            try:
+                data = json.loads(body_bytes.decode()) if body_bytes else {}
+                email = data.get("email")
+                if not email:
+                    user_count = db_get_user_count()
+                    email = f"user{user_count + 1}@teste.local"
+                email = email.lower()
+                google_id = f"dev_{email}"
+                name = email.split("@")[0].capitalize()
+                picture = ""
+
+                user = db_get_user_by_email(email)
+                if not user:
+                    if db_get_user_count() >= MAX_USERS:
+                        self.send_response(403)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({
+                            "error": f"Limite máximo de {MAX_USERS} usuários atingido no banco de dados. Novos usuários bloqueados."
+                        }).encode())
+                        return
+                    user = db_create_user(google_id, email, name, picture)
+
+                session_token = db_create_session(user["id"], days=30)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_session_cookie(session_token)
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": True, "user": {"name": user["name"], "email": user["email"]}}).encode())
+                return
+            except Exception as e:
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode())
+                return
+
+        # 3. Logout
+        elif parsed.path == "/api/auth/logout":
+            cookie_header = self.headers.get("Cookie", "")
+            if cookie_header:
+                cookies = http.cookies.SimpleCookie(cookie_header)
+                session_token = cookies.get("session_id")
+                if session_token:
+                    db_delete_session(session_token.value)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Set-Cookie", "session_id=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True}).encode())
+            return
+
+        # Rotas autenticadas
+        user = self.get_session_user()
+        if not user:
+            self.send_response(401)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Não autorizado."}).encode())
+            return
+
+        if parsed.path == "/api/start":
+            data = json.loads(body_bytes.decode())
             keyword = data.get("keyword")
             city = data.get("city")
             depth = int(data.get("depth", 2))
 
-            # 1. Geocodificar
             lat, lon = geocode_city(city)
             if not lat or not lon:
                 self.send_response(400)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                self.wfile.write(json.dumps({"error": f"Não foi possível encontrar as coordenadas para a cidade: '{city}'"}).encode())
+                self.wfile.write(json.dumps({"error": f"Coordenadas não encontradas para: '{city}'"}).encode())
                 return
 
-            # 2. Criar Job no Gosom Scraper
             job_name = f"{keyword} em {city}"
             payload = {
                 "name": job_name,
@@ -375,15 +932,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def log_message(self, format, *args):
-        # Silencia logs de requisições repetidas para não poluir
         return
 
 def run():
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
     socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("", PORT), Handler) as httpd:
-        print(f"Painel Web iniciado com sucesso!")
-        print(f"Abra no seu navegador: http://localhost:{PORT}")
+    with socketserver.TCPServer(("", PORT), AuthHandler) as httpd:
+        print(f"Painel Web com Autenticacao iniciado!")
+        print(f"Banco de dados SQLite: {DB_PATH}")
+        print(f"Limite maximo: {MAX_USERS} usuarios")
+        print(f"Acesse: http://localhost:{PORT}")
         sys.stdout.flush()
         httpd.serve_forever()
 
