@@ -894,7 +894,6 @@ APP_PAGE = """<!DOCTYPE html>
     }
 
     async function logout() {
-      if (!confirm("Deseja realmente sair?")) return;
       try {
         await fetch('/api/auth/logout', { method: 'POST' });
       } catch (err) {
