@@ -52,9 +52,66 @@ DB_PATH = os.environ.get("DB_PATH") or os.path.join(os.path.dirname(os.path.absp
 os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)
 
 # ── Banco de Dados SQLite ─────────────────────────────────────────────────────
+ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "andersonografia@gmail.com").strip().lower()
+
+def is_admin(user):
+    if not user or not user.get("email"):
+        return False
+    return user["email"].strip().lower() == ADMIN_EMAIL
+
+def db_get_setting(key, default=None):
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM settings WHERE key = ?", (key,))
+        row = cur.fetchone()
+        return row[0] if row else default
+
+def db_set_setting(key, value):
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
+        conn.commit()
+
+def get_max_users():
+    val = db_get_setting("max_users")
+    if val is not None:
+        try:
+            return int(val)
+        except ValueError:
+            pass
+    return int(os.environ.get("MAX_USERS") or 3)
+
+def db_delete_user(user_id):
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        cur.execute("DELETE FROM user_jobs WHERE user_id = ?", (user_id,))
+        cur.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        conn.commit()
+
+def db_get_all_users_admin():
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT u.id, u.google_id, u.email, u.name, u.picture, u.created_at,
+                   COUNT(j.id) as jobs_count
+            FROM users u
+            LEFT JOIN user_jobs j ON u.id = j.user_id
+            GROUP BY u.id
+            ORDER BY u.id ASC
+        """)
+        return [dict(r) for r in cur.fetchall()]
+
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -450,6 +507,41 @@ LOGIN_PAGE = """<!DOCTYPE html>
 </body>
 </html>"""
 
+ADMIN_MODAL_HTML = """
+  <div id="admin-modal" class="modal-overlay" onclick="if(event.target === this) closeAdminModal()">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title">
+          <span>👑 Painel de Gerenciamento de Usuários</span>
+        </div>
+        <button class="btn-close-modal" onclick="closeAdminModal()">✕</button>
+      </div>
+
+      <!-- Configuração de Limite -->
+      <div class="admin-box">
+        <div class="admin-box-title">⚙️ Limite de Usuários Permitidos</div>
+        <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.75rem;">
+          Defina quantas contas Google podem ter acesso simultâneo ao sistema:
+        </div>
+        <div class="admin-limit-row">
+          <input type="number" id="admin-limit-input" class="admin-limit-input" min="1" max="1000">
+          <button class="btn-save-limit" onclick="saveMaxUsersLimit()">Salvar Novo Limite</button>
+        </div>
+      </div>
+
+      <!-- Lista de Usuários -->
+      <div class="admin-box" style="margin-bottom: 0;">
+        <div class="admin-box-title">
+          <span>👥 Usuários Autorizados (<span id="admin-user-count">0</span> de <span id="admin-max-count">0</span> vagas)</span>
+        </div>
+        <div id="admin-users-list" style="margin-top: 0.75rem;">
+          <div style="text-align: center; color: var(--text-muted); padding: 1rem;">Carregando usuários...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+"""
+
 APP_PAGE = """<!DOCTYPE html>
 <html lang="pt-BR" data-theme="dark">
 <head>
@@ -794,6 +886,186 @@ APP_PAGE = """<!DOCTYPE html>
       display: inline-block;
     }
     @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    .btn-admin-nav {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.45rem 0.95rem;
+      background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+      color: #ffffff;
+      border: none;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.2s;
+      box-shadow: 0 2px 8px rgba(37, 99, 235, 0.35);
+    }
+    .btn-admin-nav:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 14px rgba(37, 99, 235, 0.5);
+      filter: brightness(1.08);
+    }
+    .badge-admin {
+      display: inline-block;
+      padding: 0.15rem 0.5rem;
+      background: #3b82f6;
+      color: #ffffff;
+      border-radius: 999px;
+      font-size: 0.68rem;
+      font-weight: 700;
+      margin-left: 0.35rem;
+      vertical-align: middle;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    /* Modal de Administrador */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(5px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 9999;
+      padding: 1.5rem;
+      animation: fadeIn 0.15s ease-out;
+    }
+    .modal-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 1.25rem;
+      width: 100%;
+      max-width: 680px;
+      max-height: 90vh;
+      overflow-y: auto;
+      padding: 2rem;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+    }
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 1.25rem;
+      margin-bottom: 1.5rem;
+    }
+    .modal-title {
+      font-size: 1.25rem;
+      font-weight: 800;
+      color: var(--navy);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .btn-close-modal {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 1.5rem;
+      cursor: pointer;
+      line-height: 1;
+      padding: 0.2rem 0.5rem;
+      border-radius: 0.4rem;
+      transition: 0.2s;
+    }
+    .btn-close-modal:hover {
+      color: var(--text);
+      background: var(--surface-hover);
+    }
+    .admin-box {
+      background: var(--bg-alt);
+      border: 1px solid var(--border);
+      border-radius: 0.85rem;
+      padding: 1.25rem;
+      margin-bottom: 1.5rem;
+    }
+    .admin-box-title {
+      font-size: 0.92rem;
+      font-weight: 700;
+      color: var(--navy);
+      margin-bottom: 0.75rem;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+    .admin-limit-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+    .admin-limit-input {
+      width: 100px !important;
+      text-align: center;
+      font-weight: 700;
+      font-size: 1rem;
+    }
+    .btn-save-limit {
+      padding: 0.65rem 1.25rem;
+      background: var(--primary);
+      color: white;
+      border: none;
+      border-radius: 0.5rem;
+      font-weight: 700;
+      font-size: 0.85rem;
+      cursor: pointer;
+      transition: 0.2s;
+    }
+    .btn-save-limit:hover {
+      background: var(--primary-hover);
+    }
+    .user-item-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.85rem;
+      border-bottom: 1px solid var(--border);
+      gap: 0.75rem;
+      transition: background 0.15s;
+    }
+    .user-item-row:last-child {
+      border-bottom: none;
+    }
+    .user-item-row:hover {
+      background: var(--surface-hover);
+      border-radius: 0.5rem;
+    }
+    .user-item-left {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .btn-remove-user {
+      padding: 0.4rem 0.75rem;
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid #ef4444;
+      color: #ef4444;
+      border-radius: 0.45rem;
+      font-size: 0.75rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: 0.2s;
+    }
+    .btn-remove-user:hover {
+      background: #ef4444;
+      color: white;
+    }
+    .badge-owner {
+      font-size: 0.72rem;
+      font-weight: 700;
+      background: rgba(37, 99, 235, 0.2);
+      color: #3b82f6;
+      border: 1px solid #2563eb;
+      padding: 0.25rem 0.6rem;
+      border-radius: 999px;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: scale(0.98); }
+      to { opacity: 1; transform: scale(1); }
+    }
   </style>
 </head>
 <body>
@@ -811,6 +1083,7 @@ APP_PAGE = """<!DOCTYPE html>
       </div>
 
       <div class="header-right">
+        {{ADMIN_BUTTON}}
         <button class="btn-theme" onclick="toggleTheme()" title="Alternar Tema Claro / Escuro">
           <span class="icon-sun">☀️</span>
           <span class="icon-moon">🌙</span>
@@ -819,7 +1092,7 @@ APP_PAGE = """<!DOCTYPE html>
         <div class="user-profile">
           {{USER_AVATAR}}
           <div class="user-info">
-            <div class="user-name">{{USER_NAME}}</div>
+            <div class="user-name">{{USER_NAME}}{{ADMIN_BADGE}}</div>
             <div class="user-email">{{USER_EMAIL}}</div>
           </div>
           <button onclick="logout()" class="btn-logout" title="Sair do painel">Sair 🚪</button>
@@ -882,6 +1155,8 @@ APP_PAGE = """<!DOCTYPE html>
       </div>
     </div>
   </div>
+
+  {{ADMIN_MODAL}}
 
   <script>
     let activePollInterval = null;
@@ -1006,6 +1281,104 @@ APP_PAGE = """<!DOCTYPE html>
 
     loadJobs();
     setInterval(loadJobs, 10000);
+
+    // Funções de Gestão de Usuários (Exclusivo Administrador)
+    function openAdminModal() {
+      const modal = document.getElementById('admin-modal');
+      if (modal) {
+        modal.style.display = 'flex';
+        loadAdminData();
+      }
+    }
+
+    function closeAdminModal() {
+      const modal = document.getElementById('admin-modal');
+      if (modal) modal.style.display = 'none';
+    }
+
+    async function loadAdminData() {
+      try {
+        const res = await fetch('/api/admin/users');
+        if (!res.ok) return;
+        const data = await res.json();
+        
+        document.getElementById('admin-limit-input').value = data.max_users;
+        document.getElementById('admin-user-count').textContent = data.users.length;
+        document.getElementById('admin-max-count').textContent = data.max_users;
+
+        const listContainer = document.getElementById('admin-users-list');
+        listContainer.innerHTML = data.users.map(u => {
+          const isMaster = u.email.toLowerCase() === data.admin_email.toLowerCase();
+          const avatar = u.picture ? `<img src="${u.picture}" style="width: 32px; height: 32px; border-radius: 50%; object-fit: cover;">` : `<div style="width: 32px; height: 32px; border-radius: 50%; background: #0066ff; color: white; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.8rem;">${(u.name || u.email)[0].toUpperCase()}</div>`;
+          const actionBtn = isMaster 
+            ? `<span class="badge-owner">🛡️ Admin Principal</span>`
+            : `<button class="btn-remove-user" onclick="deleteUserAccount(${u.id}, '${u.name || u.email}')">Remover Acesso 🗑️</button>`;
+
+          return `
+            <div class="user-item-row">
+              <div class="user-item-left">
+                ${avatar}
+                <div>
+                  <div style="font-weight: 700; font-size: 0.88rem; color: var(--navy);">${u.name}</div>
+                  <div style="font-size: 0.74rem; color: var(--text-muted);">${u.email} • ${u.jobs_count} busca(s) realizada(s)</div>
+                </div>
+              </div>
+              <div>${actionBtn}</div>
+            </div>
+          `;
+        }).join('');
+      } catch (err) {
+        console.error("Erro ao carregar dados do admin:", err);
+      }
+    }
+
+    async function saveMaxUsersLimit() {
+      const input = document.getElementById('admin-limit-input');
+      const val = parseInt(input.value);
+      if (!val || val < 1) {
+        alert("O limite deve ser de pelo menos 1 usuário.");
+        return;
+      }
+      try {
+        const res = await fetch('/api/admin/settings/limit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ max_users: val })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          alert(`✅ Limite atualizado para ${data.max_users} usuários com sucesso!`);
+          loadAdminData();
+        } else {
+          alert("Erro: " + (data.error || "Falha ao salvar limite."));
+        }
+      } catch (err) {
+        alert("Erro de conexão ao salvar limite.");
+      }
+    }
+
+    async function deleteUserAccount(userId, userName) {
+      if (!confirm(`Tem certeza que deseja remover o acesso de "${userName}"? As buscas e sessões deste usuário serão apagadas.`)) {
+        return;
+      }
+      try {
+        const res = await fetch('/api/admin/users/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ user_id: userId })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          alert("✅ Usuário removido com sucesso!");
+          loadAdminData();
+        } else {
+          alert("Erro ao remover: " + (data.error || "Falha"));
+        }
+      } catch (err) {
+        alert("Erro de rede ao remover usuário.");
+      }
+    }
+
   </script>
 </body>
 </html>"""
@@ -1054,7 +1427,7 @@ def process_google_credential(credential):
 
     user = db_get_user_by_google_id(google_id) or db_get_user_by_email(email)
     if not user:
-        if db_get_user_count() >= MAX_USERS:
+        if db_get_user_count() >= get_max_users():
             return None, None, "Limite máximo de 3 usuários atingido no sistema. Novos cadastros estão bloqueados."
         user = db_create_user(google_id, email, name, picture)
 
@@ -1170,8 +1543,8 @@ class AuthHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({
                 "user_count": count,
-                "max_users": MAX_USERS,
-                "is_full": count >= MAX_USERS,
+                "max_users": get_max_users(),
+                "is_full": count >= get_max_users(),
                 "google_configured": bool(GOOGLE_CLIENT_ID)
             }).encode())
             return
@@ -1192,11 +1565,34 @@ class AuthHandler(http.server.BaseHTTPRequestHandler):
         # Painel Principal (/)
         if parsed.path == "/" or parsed.path == "/index.html":
             avatar_html = f'<img src="{user["picture"]}" class="user-avatar" alt="Avatar">' if user.get("picture") else f'<div class="user-avatar">{user["name"][:1].upper()}</div>'
+            admin_btn = '<button class="btn-admin-nav" onclick="openAdminModal()">⚙️ Gerenciar Usuários</button>' if is_admin(user) else ''
+            admin_badge = '<span class="badge-admin">Admin</span>' if is_admin(user) else ''
+            admin_modal = ADMIN_MODAL_HTML if is_admin(user) else ''
+            
             html = APP_PAGE.replace("{{USER_NAME}}", user["name"]).replace("{{USER_EMAIL}}", user["email"]).replace("{{USER_AVATAR}}", avatar_html)
+            html = html.replace("{{ADMIN_BUTTON}}", admin_btn).replace("{{ADMIN_BADGE}}", admin_badge).replace("{{ADMIN_MODAL}}", admin_modal)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(html.encode("utf-8"))
+            return
+
+        elif parsed.path == "/api/admin/users":
+            if not is_admin(user):
+                self.send_response(403)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Acesso negado: exclusivo para administrador."}).encode())
+                return
+            users_data = db_get_all_users_admin()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "users": users_data,
+                "max_users": get_max_users(),
+                "admin_email": ADMIN_EMAIL
+            }).encode())
             return
 
         # Listagem de jobs ISOLADA por usuário
@@ -1376,6 +1772,71 @@ class AuthHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({"error": "Não autorizado."}).encode())
             return
+
+        elif parsed.path == "/api/admin/users/delete":
+            if not is_admin(user):
+                self.send_response(403)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Acesso negado: exclusivo para administrador."}).encode())
+                return
+            try:
+                data = json.loads(body_bytes.decode())
+                target_id = int(data.get("user_id"))
+                target_user = db_get_user_by_id(target_id)
+                if not target_user:
+                    self.send_response(404)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"error": "Usuário não encontrado."}).encode())
+                    return
+                if target_user["email"].lower() == ADMIN_EMAIL:
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"error": "Você não pode excluir o perfil de administrador principal."}).encode())
+                    return
+                db_delete_user(target_id)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": True}).encode())
+                return
+            except Exception as e:
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode())
+                return
+
+        elif parsed.path == "/api/admin/settings/limit":
+            if not is_admin(user):
+                self.send_response(403)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "Acesso negado: exclusivo para administrador."}).encode())
+                return
+            try:
+                data = json.loads(body_bytes.decode())
+                limit = int(data.get("max_users", 3))
+                if limit < 1 or limit > 1000:
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"error": "O limite deve ser entre 1 e 1000."}).encode())
+                    return
+                db_set_setting("max_users", str(limit))
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": True, "max_users": limit}).encode())
+                return
+            except Exception as e:
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode())
+                return
 
         # Início de Scraping - VINCULADO AO USUÁRIO
         if parsed.path == "/api/start":
