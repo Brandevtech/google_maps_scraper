@@ -215,50 +215,113 @@ def db_user_owns_job(user_id, job_id):
 # ── Templates HTML ────────────────────────────────────────────────────────────
 
 LOGIN_PAGE = """<!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="pt-BR" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Scraper Brandev - Login</title>
+  <title>Scraper de leads do Google Maps - Login</title>
   <link rel="icon" type="image/png" href="/assets/favicon.png">
+  <script>
+    (function() {
+      const savedTheme = localStorage.getItem('brandev_theme') || 'dark';
+      document.documentElement.setAttribute('data-theme', savedTheme);
+    })();
+  </script>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <style>
-    :root {
+    :root, [data-theme="dark"] {
+      --primary: #0066ff;
+      --primary-hover: #1d72fe;
+      --navy: #f8fafc;
+      --bg: #090d16;
+      --bg-alt: #0d1527;
+      --surface: #111827;
+      --surface-hover: #1f293d;
+      --border: #1f293d;
+      --border-focus: #0066ff;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --card-shadow: 0 20px 35px -5px rgba(0, 0, 0, 0.6), 0 10px 15px -6px rgba(0, 0, 0, 0.5);
+      --danger: #ef4444;
+      --danger-bg: rgba(239, 68, 68, 0.15);
+      --danger-text: #fca5a5;
+      --success: #10b981;
+      --btn-toggle-bg: #1f293d;
+      --btn-toggle-border: #334155;
+    }
+
+    [data-theme="light"] {
       --primary: #0066ff;
       --primary-hover: #0052cc;
       --navy: #0b192c;
       --bg: #ffffff;
       --bg-alt: #f8fafc;
       --surface: #ffffff;
+      --surface-hover: #f1f5f9;
       --border: #e2e8f0;
+      --border-focus: #0066ff;
       --text: #0f172a;
       --text-muted: #64748b;
+      --card-shadow: 0 10px 25px -5px rgba(11, 25, 44, 0.08), 0 8px 10px -6px rgba(11, 25, 44, 0.04);
       --danger: #ef4444;
       --danger-bg: #fef2f2;
       --danger-text: #991b1b;
       --success: #10b981;
+      --btn-toggle-bg: #ffffff;
+      --btn-toggle-border: #e2e8f0;
     }
+
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
     body {
       background: var(--bg-alt);
-      background-image: radial-gradient(#e2e8f0 1.2px, transparent 1.2px);
-      background-size: 24px 24px;
       color: var(--text);
       display: flex;
       align-items: center;
       justify-content: center;
       min-height: 100vh;
       padding: 1.5rem;
+      position: relative;
+      transition: background 0.25s, color 0.25s;
     }
+    .theme-topbar {
+      position: absolute;
+      top: 1.5rem;
+      right: 1.5rem;
+    }
+    .btn-theme {
+      background: var(--btn-toggle-bg);
+      border: 1px solid var(--btn-toggle-border);
+      color: var(--text);
+      cursor: pointer;
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.15rem;
+      transition: all 0.2s;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    }
+    .btn-theme:hover {
+      transform: scale(1.08);
+      border-color: var(--border-focus);
+    }
+    [data-theme="dark"] .icon-sun { display: inline-block; }
+    [data-theme="dark"] .icon-moon { display: none; }
+    [data-theme="light"] .icon-sun { display: none; }
+    [data-theme="light"] .icon-moon { display: inline-block; }
+
     .card {
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 1.25rem;
       width: 100%;
       max-width: 440px;
-      padding: 2.5rem 2.2rem;
-      box-shadow: 0 10px 25px -5px rgba(11, 25, 44, 0.08), 0 8px 10px -6px rgba(11, 25, 44, 0.04);
+      padding: 2.6rem 2.2rem;
+      box-shadow: var(--card-shadow);
       text-align: center;
+      transition: background 0.25s, border-color 0.25s;
     }
     .logo-container {
       display: flex;
@@ -269,64 +332,15 @@ LOGIN_PAGE = """<!DOCTYPE html>
       width: 140px;
       height: 140px;
       object-fit: contain;
-      border-radius: 1rem;
-      box-shadow: 0 4px 16px rgba(0, 102, 255, 0.1);
-      border: 1px solid var(--border);
-      background: #ffffff;
-      padding: 6px;
+      filter: drop-shadow(0 8px 24px rgba(0, 102, 255, 0.25));
     }
     h1 {
-      font-size: 1.6rem;
-      font-weight: 800;
+      font-size: 1.35rem;
+      font-weight: 700;
       color: var(--navy);
       letter-spacing: -0.02em;
-      margin-bottom: 0.35rem;
-    }
-    h1 span {
-      color: var(--primary);
-    }
-    .subtitle {
-      color: var(--text-muted);
-      font-size: 0.9rem;
-      margin-bottom: 1.75rem;
-      line-height: 1.5;
-    }
-    
-    .quota-box {
-      background: #f8fafc;
-      border: 1px solid var(--border);
-      border-radius: 0.75rem;
-      padding: 1rem;
-      margin-bottom: 1.75rem;
-      text-align: left;
-    }
-    .quota-header {
-      display: flex;
-      justify-content: space-between;
-      font-size: 0.82rem;
-      font-weight: 600;
-      color: var(--text);
-      margin-bottom: 0.5rem;
-    }
-    .quota-bar-bg {
-      width: 100%;
-      height: 8px;
-      background: #e2e8f0;
-      border-radius: 999px;
-      overflow: hidden;
-    }
-    .quota-bar-fill {
-      height: 100%;
-      background: var(--primary);
-      transition: width 0.3s;
-    }
-    .quota-bar-fill.full {
-      background: var(--danger);
-    }
-    .quota-desc {
-      font-size: 0.76rem;
-      color: var(--text-muted);
-      margin-top: 0.5rem;
+      margin-bottom: 1.6rem;
+      line-height: 1.3;
     }
 
     .btn-google-container {
@@ -346,26 +360,33 @@ LOGIN_PAGE = """<!DOCTYPE html>
     }
     .alert-danger {
       background: var(--danger-bg);
-      border: 1px solid #fecaca;
+      border: 1px solid var(--danger);
       color: var(--danger-text);
       display: block;
     }
     .alert-success {
-      background: #ecfdf5;
-      border: 1px solid #a7f3d0;
-      color: #065f46;
+      background: rgba(16, 185, 129, 0.15);
+      border: 1px solid var(--success);
+      color: #86efac;
       display: block;
     }
   </style>
 </head>
 <body>
+  <div class="theme-topbar">
+    <button class="btn-theme" onclick="toggleTheme()" title="Alternar Tema Claro / Escuro">
+      <span class="icon-sun">☀️</span>
+      <span class="icon-moon">🌙</span>
+    </button>
+  </div>
+
   <div class="card">
     <div class="logo-container">
-      <img src="/assets/logo.png" alt="Scraper Brandev" class="logo-img">
+      <img src="/assets/logo.png" alt="Scraper de leads do Google Maps" class="logo-img">
     </div>
-    <h1 style="font-size: 1.3rem; font-weight: 700; color: var(--navy); margin-bottom: 1.5rem;">Scraper de leads do Google Maps</h1>
+    <h1>Scraper de leads do Google Maps</h1>
 
-    <!-- Botão Oficial do Google (Popup / Callback nativo - sem erro de redirect_uri_mismatch) -->
+    <!-- Botão Oficial do Google -->
     <div id="google-btn-section">
       <div id="g_id_onload"
            data-client_id="{{GOOGLE_CLIENT_ID}}"
@@ -387,13 +408,14 @@ LOGIN_PAGE = """<!DOCTYPE html>
 
     <!-- Mensagens de Alerta / Erro -->
     <div id="alert-box" class="alert">{{ERROR_MESSAGE}}</div>
-
-
   </div>
 
   <script>
-    async function updateQuota() {
-      // Quota box removed from UI
+    function toggleTheme() {
+      const current = document.documentElement.getAttribute('data-theme') || 'dark';
+      const next = current === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      localStorage.setItem('brandev_theme', next);
     }
 
     async function handleCredentialResponse(response) {
@@ -424,27 +446,79 @@ LOGIN_PAGE = """<!DOCTYPE html>
       box.className = 'alert alert-' + type;
       box.style.display = 'block';
     }
-
-    updateQuota();
   </script>
 </body>
 </html>"""
 
 APP_PAGE = """<!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="pt-BR" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Scraper Brandev - Painel</title>
+  <title>Scraper de leads do Google Maps - Painel</title>
   <link rel="icon" type="image/png" href="/assets/favicon.png">
+  <script>
+    (function() {
+      const savedTheme = localStorage.getItem('brandev_theme') || 'dark';
+      document.documentElement.setAttribute('data-theme', savedTheme);
+    })();
+  </script>
   <style>
-    :root {
+    :root, [data-theme="dark"] {
+      --primary: #0066ff;
+      --primary-hover: #1d72fe;
+      --navy: #f8fafc;
+      --bg: #090d16;
+      --bg-alt: #0d1527;
+      --surface: #111827;
+      --surface-hover: #1a2436;
+      --border: #1f293d;
+      --border-focus: #0066ff;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --input-bg: #090e1a;
+      --input-border: #243248;
+      --input-text: #f8fafc;
+      --table-header-bg: #090e1a;
+      --table-row-hover: rgba(255, 255, 255, 0.03);
+      --badge-bg: #064e3b;
+      --badge-text: #34d399;
+      --badge-border: #059669;
+      --user-profile-bg: #1a2436;
+      --btn-toggle-bg: #1a2436;
+      --btn-toggle-border: #2e3e5c;
+      --card-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+      --pill-ok-bg: #064e3b;
+      --pill-ok-text: #34d399;
+      --pill-ok-border: #059669;
+      --pill-working-bg: #78350f;
+      --pill-working-text: #fbbf24;
+      --pill-working-border: #92400e;
+      --pill-failed-bg: #7f1d1d;
+      --pill-failed-text: #f87171;
+      --pill-failed-border: #b91c1c;
+      --status-active-bg: #1e1b4b;
+      --status-active-border: #4338ca;
+      --status-active-text: #c7d2fe;
+      --status-done-bg: #064e3b;
+      --status-done-border: #059669;
+      --status-done-text: #a7f3d0;
+      --status-error-bg: #450a0a;
+      --status-error-border: #dc2626;
+      --status-error-text: #fecaca;
+    }
+
+    [data-theme="light"] {
       --primary: #0066ff;
       --primary-hover: #0052cc;
       --navy: #0b192c;
       --bg: #ffffff;
       --bg-alt: #f8fafc;
       --surface: #ffffff;
+      --surface-hover: #f1f5f9;
       --border: #e2e8f0;
       --border-focus: #0066ff;
       --text: #0f172a;
@@ -452,13 +526,45 @@ APP_PAGE = """<!DOCTYPE html>
       --success: #10b981;
       --warning: #f59e0b;
       --danger: #ef4444;
+      --input-bg: #ffffff;
+      --input-border: #cbd5e1;
+      --input-text: #0f172a;
+      --table-header-bg: #f8fafc;
+      --table-row-hover: #f8fafc;
+      --badge-bg: #ecfdf5;
+      --badge-text: #065f46;
+      --badge-border: #a7f3d0;
+      --user-profile-bg: #f8fafc;
+      --btn-toggle-bg: #ffffff;
+      --btn-toggle-border: #e2e8f0;
+      --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+      --pill-ok-bg: #dcfce7;
+      --pill-ok-text: #15803d;
+      --pill-ok-border: #bbf7d0;
+      --pill-working-bg: #fef3c7;
+      --pill-working-text: #b45309;
+      --pill-working-border: #fde68a;
+      --pill-failed-bg: #fee2e2;
+      --pill-failed-text: #b91c1c;
+      --pill-failed-border: #fecaca;
+      --status-active-bg: #eff6ff;
+      --status-active-border: #bfdbfe;
+      --status-active-text: #1e40af;
+      --status-done-bg: #f0fdf4;
+      --status-done-border: #bbf7d0;
+      --status-done-text: #166534;
+      --status-error-bg: #fef2f2;
+      --status-error-border: #fecaca;
+      --status-error-text: #991b1b;
     }
+
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
     body {
       background: var(--bg-alt);
       color: var(--text);
       padding: 1.75rem 2rem;
       min-height: 100vh;
+      transition: background 0.25s, color 0.25s;
     }
     .container { max-width: 1140px; margin: 0 auto; }
     
@@ -473,7 +579,8 @@ APP_PAGE = """<!DOCTYPE html>
       align-items: center;
       flex-wrap: wrap;
       gap: 1rem;
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+      box-shadow: var(--card-shadow);
+      transition: background 0.25s, border-color 0.25s;
     }
     .header-left { display: flex; align-items: center; gap: 1rem; }
     .brand-link { display: flex; align-items: center; gap: 0.85rem; text-decoration: none; color: inherit; }
@@ -481,10 +588,7 @@ APP_PAGE = """<!DOCTYPE html>
       width: 44px;
       height: 44px;
       object-fit: contain;
-      border-radius: 0.6rem;
-      border: 1px solid var(--border);
-      background: #ffffff;
-      padding: 2px;
+      filter: drop-shadow(0 2px 6px rgba(0, 102, 255, 0.35));
     }
     .brand-title {
       font-size: 1.25rem;
@@ -504,19 +608,47 @@ APP_PAGE = """<!DOCTYPE html>
     }
     .badge {
       font-size: 0.72rem;
-      background: #ecfdf5;
-      color: #065f46;
-      border: 1px solid #a7f3d0;
+      background: var(--badge-bg);
+      color: var(--badge-text);
+      border: 1px solid var(--badge-border);
       padding: 0.2rem 0.55rem;
       border-radius: 999px;
       font-weight: 600;
     }
     
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .btn-theme {
+      background: var(--btn-toggle-bg);
+      border: 1px solid var(--btn-toggle-border);
+      color: var(--text);
+      cursor: pointer;
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.1rem;
+      transition: all 0.2s;
+    }
+    .btn-theme:hover {
+      transform: scale(1.08);
+      border-color: var(--border-focus);
+    }
+    [data-theme="dark"] .icon-sun { display: inline-block; }
+    [data-theme="dark"] .icon-moon { display: none; }
+    [data-theme="light"] .icon-sun { display: none; }
+    [data-theme="light"] .icon-moon { display: inline-block; }
+
     .user-profile {
       display: flex;
       align-items: center;
       gap: 0.75rem;
-      background: #f8fafc;
+      background: var(--user-profile-bg);
       padding: 0.4rem 0.85rem;
       border-radius: 999px;
       border: 1px solid var(--border);
@@ -552,7 +684,7 @@ APP_PAGE = """<!DOCTYPE html>
       align-items: center;
       gap: 0.25rem;
     }
-    .btn-logout:hover { background: #fee2e2; }
+    .btn-logout:hover { background: rgba(239, 68, 68, 0.15); }
 
     .layout { display: grid; grid-template-columns: 380px 1fr; gap: 2rem; }
     @media (max-width: 890px) { .layout { grid-template-columns: 1fr; } }
@@ -562,7 +694,8 @@ APP_PAGE = """<!DOCTYPE html>
       border: 1px solid var(--border);
       border-radius: 1rem;
       padding: 1.6rem;
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+      box-shadow: var(--card-shadow);
+      transition: background 0.25s, border-color 0.25s;
     }
     .card h2 {
       font-size: 1.18rem;
@@ -579,22 +712,22 @@ APP_PAGE = """<!DOCTYPE html>
       font-size: 0.85rem;
       font-weight: 600;
       margin-bottom: 0.45rem;
-      color: #334155;
+      color: var(--text-muted);
     }
     input[type="text"], input[type="number"] {
       width: 100%;
       padding: 0.7rem 0.9rem;
-      background: #ffffff;
-      border: 1px solid #cbd5e1;
+      background: var(--input-bg);
+      border: 1px solid var(--input-border);
       border-radius: 0.55rem;
-      color: var(--text);
+      color: var(--input-text);
       font-size: 0.95rem;
       transition: 0.15s;
     }
     input:focus {
       outline: none;
       border-color: var(--border-focus);
-      box-shadow: 0 0 0 3px rgba(0, 102, 255, 0.15);
+      box-shadow: 0 0 0 3px rgba(0, 102, 255, 0.25);
     }
     .help-text { font-size: 0.76rem; color: var(--text-muted); margin-top: 0.35rem; }
     
@@ -613,28 +746,28 @@ APP_PAGE = """<!DOCTYPE html>
       align-items: center;
       justify-content: center;
       gap: 0.5rem;
-      box-shadow: 0 4px 12px rgba(0, 102, 255, 0.25);
+      box-shadow: 0 4px 12px rgba(0, 102, 255, 0.3);
     }
     button.btn:hover {
-      box-shadow: 0 6px 16px rgba(0, 102, 255, 0.35);
-      filter: brightness(1.05);
+      box-shadow: 0 6px 16px rgba(0, 102, 255, 0.45);
+      filter: brightness(1.08);
     }
     button.btn:disabled { opacity: 0.55; cursor: not-allowed; box-shadow: none; filter: none; }
     
     .status-box { margin-top: 1.25rem; padding: 0.85rem; border-radius: 0.55rem; font-size: 0.88rem; display: none; line-height: 1.4; }
-    .status-box.active { display: block; background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; }
-    .status-box.done { display: block; background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; }
-    .status-box.error { display: block; background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+    .status-box.active { display: block; background: var(--status-active-bg); border: 1px solid var(--status-active-border); color: var(--status-active-text); }
+    .status-box.done { display: block; background: var(--status-done-bg); border: 1px solid var(--status-done-border); color: var(--status-done-text); }
+    .status-box.error { display: block; background: var(--status-error-bg); border: 1px solid var(--status-error-border); color: var(--status-error-text); }
     
     table { width: 100%; border-collapse: collapse; margin-top: 0.75rem; font-size: 0.875rem; }
     th, td { text-align: left; padding: 0.85rem 0.75rem; border-bottom: 1px solid var(--border); }
-    th { color: #475569; font-weight: 600; background: #f8fafc; }
-    tr:hover { background: #f8fafc; }
+    th { color: var(--text-muted); font-weight: 600; background: var(--table-header-bg); }
+    tr:hover { background: var(--table-row-hover); }
     
     .status-pill { padding: 0.22rem 0.65rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; display: inline-block; }
-    .pill-ok { background: #dcfce7; color: #15803d; border: 1px solid #bbf7d0; }
-    .pill-working { background: #fef3c7; color: #b45309; border: 1px solid #fde68a; }
-    .pill-failed { background: #fee2e2; color: #b91c1c; border: 1px solid #fecaca; }
+    .pill-ok { background: var(--pill-ok-bg); color: var(--pill-ok-text); border: 1px solid var(--pill-ok-border); }
+    .pill-working { background: var(--pill-working-bg); color: var(--pill-working-text); border: 1px solid var(--pill-working-border); }
+    .pill-failed { background: var(--pill-failed-bg); color: var(--pill-failed-text); border: 1px solid var(--pill-failed-border); }
     
     .btn-download {
       display: inline-flex;
@@ -668,7 +801,7 @@ APP_PAGE = """<!DOCTYPE html>
     <header>
       <div class="header-left">
         <a href="/" class="brand-link">
-          <img src="/assets/logo.png" alt="Scraper Brandev" class="brand-logo">
+          <img src="/assets/logo.png" alt="Scraper de leads do Google Maps" class="brand-logo">
           <div class="brand-titles">
             <div class="brand-title">Scraper <span>Brandev</span></div>
             <span class="brand-subtitle">Google Maps Lead Extractor</span>
@@ -677,13 +810,20 @@ APP_PAGE = """<!DOCTYPE html>
         <span class="badge">Área Privada</span>
       </div>
 
-      <div class="user-profile">
-        {{USER_AVATAR}}
-        <div class="user-info">
-          <div class="user-name">{{USER_NAME}}</div>
-          <div class="user-email">{{USER_EMAIL}}</div>
+      <div class="header-right">
+        <button class="btn-theme" onclick="toggleTheme()" title="Alternar Tema Claro / Escuro">
+          <span class="icon-sun">☀️</span>
+          <span class="icon-moon">🌙</span>
+        </button>
+
+        <div class="user-profile">
+          {{USER_AVATAR}}
+          <div class="user-info">
+            <div class="user-name">{{USER_NAME}}</div>
+            <div class="user-email">{{USER_EMAIL}}</div>
+          </div>
+          <button onclick="logout()" class="btn-logout" title="Sair do painel">Sair 🚪</button>
         </div>
-        <button onclick="logout()" class="btn-logout" title="Sair do painel">Sair 🚪</button>
       </div>
     </header>
 
@@ -745,6 +885,13 @@ APP_PAGE = """<!DOCTYPE html>
 
   <script>
     let activePollInterval = null;
+
+    function toggleTheme() {
+      const current = document.documentElement.getAttribute('data-theme') || 'dark';
+      const next = current === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      localStorage.setItem('brandev_theme', next);
+    }
 
     async function logout() {
       if (!confirm("Deseja realmente sair?")) return;
